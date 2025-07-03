@@ -130,7 +130,9 @@ chmod +x "$SCRIPT_PATH"
 VERSION_FILE="$ALIAS_DIR/version"
 mkdir -p "$(dirname "$VERSION_FILE")"
 curl -fsSL "$REMOTE_VERSION_URL" -o "$VERSION_FILE"
-chmod 600 "$VERSION_FILE"
+# Set ownership and permissions
+chown "$DEFAULT_USER:$DEFAULT_USER" "$VERSION_FILE"
+chmod 644 "$VERSION_FILE"
 
 echo
 echo "[✅] 'ssm-connect' installed successfully!"
