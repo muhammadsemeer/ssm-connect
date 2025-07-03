@@ -130,14 +130,6 @@ else
   echo "[✅] Session Manager Plugin already installed."
 fi
 
-# === Setup alias config dir ===
-echo "[📁] Setting up alias directory at $ALIAS_DIR"
-mkdir -p "$ALIAS_DIR"
-touch "$ALIAS_FILE"
-chown -R "$DEFAULT_USER:$DEFAULT_USER" "$ALIAS_DIR"
-chmod 700 "$ALIAS_DIR"
-chmod 600 "$ALIAS_FILE"
-
 # === Download CLI script ===
 echo "[⬇️] Installing ssm-connect CLI to $SCRIPT_PATH"
 curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH"
@@ -146,16 +138,21 @@ chmod +x "$SCRIPT_PATH"
 VERSION_FILE="$ALIAS_DIR/version"
 mkdir -p "$(dirname "$VERSION_FILE")"
 curl -fsSL "$REMOTE_VERSION_URL" -o "$VERSION_FILE"
-# Set ownership and permissions (Linux only)
+
+# === Setup alias config dir ===
+echo "[📁] Setting up alias directory at $ALIAS_DIR"
+mkdir -p "$ALIAS_DIR"
+touch "$ALIAS_FILE"
 if $IS_LINUX; then
   if id "$DEFAULT_USER" &>/dev/null; then
-    echo "[🔧] Setting ownership and permissions for version file..."
-    sudo chown "$DEFAULT_USER:$DEFAULT_USER" "$VERSION_FILE"
-    chmod 644 "$VERSION_FILE"
+    echo "[🔧] Setting ownership and permissions for alias directory..."
+    chown -R "$DEFAULT_USER:$DEFAULT_USER" "$ALIAS_DIR"
   else
-    echo "[⚠️] Warning: Could not find user $DEFAULT_USER, skipping chown for version file."
+    echo "[⚠️] Warning: Could not find user $DEFAULT_USER, skipping chown for alias directory."
   fi
 fi
+chmod 700 "$ALIAS_DIR"
+chmod 600 "$ALIAS_FILE"
 
 echo
 echo "[✅] 'ssm-connect' installed successfully!"
