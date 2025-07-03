@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/refs/heads/master/ssm-connect.sh"
+REMOTE_VERSION_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/version"
 SCRIPT_PATH="/usr/local/bin/ssm-connect"
 
 echo "[🔧] Installing ssm-connect..."
@@ -32,14 +33,20 @@ ALIAS_FILE="$ALIAS_DIR/aliases"
 
 # === Helper for install check ===
 install_if_missing_linux() {
+  missing_pkgs=()
   for pkg in "$@"; do
     if ! dpkg -s "$pkg" >/dev/null 2>&1; then
-      echo "[📦] Installing $pkg..."
-      apt install -y -qq "$pkg"
-    else
-      echo "[✅] $pkg already installed."
+      missing_pkgs+=("$pkg")
     fi
   done
+
+  if [[ ${#missing_pkgs[@]} -gt 0 ]]; then
+    echo "[📦] Installing missing packages: ${missing_pkgs[*]}"
+    apt-get update -qq >/dev/null 2>&1
+    apt-get install -y "${missing_pkgs[@]}" >/dev/null 2>&1 || echo "[ERROR] Failed to install <package>"
+  else
+    echo "[✅] All required packages are already installed."
+  fi
 }
 
 install_if_missing_brew() {
@@ -56,7 +63,6 @@ install_if_missing_brew() {
 # === Install system packages ===
 if $IS_LINUX; then
   echo "[📦] Checking required packages on Linux..."
-  apt update -qq
   install_if_missing_linux curl jq fzf unzip
 elif $IS_MAC; then
   echo "[📦] Checking required packages on macOS..."
@@ -120,6 +126,11 @@ chmod 600 "$ALIAS_FILE"
 echo "[⬇️] Installing ssm-connect CLI to $SCRIPT_PATH"
 curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH"
 chmod +x "$SCRIPT_PATH"
+# === Version file setup ===
+VERSION_FILE="$ALIAS_DIR/version"
+mkdir -p "$(dirname "$VERSION_FILE")"
+curl -fsSL "$REMOTE_VERSION_URL" -o "$VERSION_FILE"
+chmod 600 "$VERSION_FILE"
 
 echo
 echo "[✅] 'ssm-connect' installed successfully!"

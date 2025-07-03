@@ -23,26 +23,21 @@ check_for_update() {
     LOCAL_VERSION="0.0.0"
   fi
 
-  LATEST_VERSION=$(curl -fsSL "$REMOTE_VERSION_URL" || echo "$LOCAL_VERSION")
+  LATEST_VERSION=$(curl -fsSL "$REMOTE_VERSION_URL" 2>/dev/null || echo "$LOCAL_VERSION")
 
   if [[ "$LATEST_VERSION" != "$LOCAL_VERSION" ]]; then
     echo "[⬆️] New version available: $LATEST_VERSION (current: $LOCAL_VERSION)"
-    echo "     Run: ssm-connect --update to upgrade."
+    echo "[ℹ️] Run: ssm-connect --update to upgrade."
   fi
 }
 
-# === Update Command ===
-if [[ "${1:-}" == "--update" ]]; then
-  echo "[⬇️] Updating ssm-connect from GitHub..."
-  curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH"
-  chmod +x "$SCRIPT_PATH"
-  curl -fsSL "$REMOTE_VERSION_URL" -o "$VERSION_FILE"
-  echo "[✅] ssm-connect updated successfully!"
-  exit 0
+# === Run version check in background, only for main usage ===
+if [[ "${1:-}" != "--version" && "${1:-}" != "--help" && "${1:-}" != "-h" && "${1:-}" != "--update" && "${1:-}" != "--uninstall" ]]; then
+  check_for_update &
+else
+  # If version or help command, run immediately
+  check_for_update
 fi
-
-# === Run version check in background ===
-check_for_update &
 
 # === Check required tools ===
 for cmd in aws fzf; do
@@ -63,6 +58,8 @@ Usage:
   ssm-connect --list-aliases -l      List all aliases
   ssm-connect --update               Update to latest version
   ssm-connect --help         -h      Show this help
+  ssm-connect --version
+  ssm-connect --uninstall            Uninstall ssm-connect
 EOF
 }
 
@@ -107,6 +104,54 @@ case "${1:-}" in
     column -t "$ALIAS_FILE"
     exit 0
     ;;
+  --version)
+    if [[ -f "$VERSION_FILE" ]]; then
+      echo "[ℹ️] Current version: $(cat "$VERSION_FILE")"
+    else
+      echo "[⚠️] Version file not found. Please run: ssm-connect --update"
+    fi
+    exit 0
+    ;;
+  --uninstall)
+    echo "[🗑️] Uninstalling ssm-connect..."
+
+    # Remove CLI
+    if [[ -f "$SCRIPT_PATH" ]]; then
+      sudo rm -f "$SCRIPT_PATH"
+      echo "[✅] Removed CLI: $SCRIPT_PATH"
+    fi
+
+    # Remove config
+    if [[ -d "$CONFIG_DIR" ]]; then
+      rm -rf "$CONFIG_DIR"
+      echo "[✅] Removed config dir: $CONFIG_DIR"
+    fi
+
+    # Remove AWS profile credentials
+    AWS_CRED_FILE="$HOME/.aws/credentials"
+    AWS_CONFIG_FILE="$HOME/.aws/config"
+
+    if grep -q "^\[$AWS_PROFILE\]" "$AWS_CRED_FILE" 2>/dev/null; then
+      sed -i.bak "/^\[$AWS_PROFILE\]/,/^\[/d" "$AWS_CRED_FILE"
+      echo "[✅] Removed credentials for profile: $AWS_PROFILE"
+    fi
+
+    if grep -q "^\[$AWS_PROFILE\]" "$AWS_CONFIG_FILE" 2>/dev/null; then
+      sed -i.bak "/^\[$AWS_PROFILE\]/,/^\[/d" "$AWS_CONFIG_FILE"
+      echo "[✅] Removed config for profile: $AWS_PROFILE"
+    fi
+
+    echo "[🧹] Uninstall complete."
+    exit 0
+    ;;
+  --update)
+      echo "[⬇️] Updating ssm-connect from GitHub..."
+      sudo curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH"
+      sudo chmod +x "$SCRIPT_PATH"
+      curl -fsSL "$REMOTE_VERSION_URL" -o "$VERSION_FILE"
+      echo "[✅] ssm-connect updated successfully!"
+      exit 0
+      ;;
   --*|-*)
     echo "[❌] Unknown option: $1"
     show_help
