@@ -51,9 +51,9 @@ install_if_missing_linux() {
 
 install_if_missing_brew() {
   for pkg in "$@"; do
-    if ! brew list --formula | grep -q "^$pkg$"; then
+    if ! brew list --formula "$pkg" &>/dev/null; then
       echo "[📦] Installing $pkg..."
-      brew install --quiet "$pkg" >/dev/null 2>&1 || echo "[ERROR] Failed to install <package>"
+      brew install --quiet "$pkg" >/dev/null 2>&1 || echo "[ERROR] Failed to install $pkg"
     else
       echo "[✅] $pkg already installed."
     fi
