@@ -98,18 +98,34 @@ if ! command -v session-manager-plugin &>/dev/null; then
     dpkg -i /tmp/session-manager-plugin.deb
     rm /tmp/session-manager-plugin.deb
   elif $IS_MAC; then
-    TMP_DIR="/tmp/ssm-install"
-    mkdir -p "$TMP_DIR"
+      if ! command -v session-manager-plugin &>/dev/null; then
+        echo "[📦] Installing Session Manager Plugin for macOS..."
 
-    echo "[📦] Downloading Session Manager Plugin for macOS..."
-    curl -fsSL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/mac/sessionmanager-bundle.zip" -o "$TMP_DIR/ssm.zip"
-    unzip -q -o "$TMP_DIR/ssm.zip" -d "$TMP_DIR/sessionmanager-bundle"
+        ARCH=$(uname -m)
+        TMP_DIR="/tmp/ssm-install"
+        mkdir -p "$TMP_DIR"
+        cd "$TMP_DIR"
 
-    echo "[📦] Installing plugin..."
-    sudo installer -pkg "$TMP_DIR/sessionmanager-bundle/sessionmanagerplugin.pkg" -target /
+        if [[ "$ARCH" == "arm64" ]]; then
+          PLUGIN_URL="https://s3.amazonaws.com/session-manager-downloads/plugin/latest/mac_arm64/session-manager-plugin.pkg"
+        else
+          PLUGIN_URL="https://s3.amazonaws.com/session-manager-downloads/plugin/latest/mac/session-manager-plugin.pkg"
+        fi
 
-    rm -rf "$TMP_DIR"
-  fi
+        echo "[⬇️] Downloading plugin from: $PLUGIN_URL"
+        curl -fsSL "$PLUGIN_URL" -o "session-manager-plugin.pkg"
+
+        echo "[⚙️] Installing plugin..."
+        sudo installer -pkg "session-manager-plugin.pkg" -target /
+
+        echo "[🔗] Linking binary..."
+        sudo ln -sf /usr/local/sessionmanagerplugin/bin/session-manager-plugin /usr/local/bin/session-manager-plugin
+
+        rm -rf "$TMP_DIR"
+      else
+        echo "[✅] Session Manager Plugin already installed."
+      fi
+    fi
 else
   echo "[✅] Session Manager Plugin already installed."
 fi
