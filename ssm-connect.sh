@@ -113,36 +113,45 @@ case "${1:-}" in
     exit 0
     ;;
   --uninstall)
-    echo "[🗑️] Uninstalling ssm-connect..."
+    if [[ "${1:-}" == "--uninstall" ]]; then
+      echo "[🗑️] Uninstalling ssm-connect..."
 
-    # Remove CLI
-    if [[ -f "$SCRIPT_PATH" ]]; then
-      sudo rm -f "$SCRIPT_PATH"
-      echo "[✅] Removed CLI: $SCRIPT_PATH"
+      # Remove CLI
+      if [[ -f "$SCRIPT_PATH" ]]; then
+        sudo rm -f "$SCRIPT_PATH"
+        echo "[✅] Removed CLI: $SCRIPT_PATH"
+      else
+        echo "[ℹ️] CLI script not found at $SCRIPT_PATH"
+      fi
+
+      # Remove config
+      if [[ -d "$CONFIG_DIR" ]]; then
+        rm -rf "$CONFIG_DIR"
+        echo "[✅] Removed config dir: $CONFIG_DIR"
+      else
+        echo "[ℹ️] Config directory not found: $CONFIG_DIR"
+      fi
+
+      # Remove AWS profile credentials
+      AWS_CRED_FILE="$HOME/.aws/credentials"
+      AWS_CONFIG_FILE="$HOME/.aws/config"
+
+      if [[ -f "$AWS_CRED_FILE" ]] && grep -q "^\[$AWS_PROFILE\]" "$AWS_CRED_FILE"; then
+        sed -i.bak "/^\[$AWS_PROFILE\]/,/^\[/d" "$AWS_CRED_FILE"
+        echo "[✅] Removed credentials for profile: $AWS_PROFILE"
+      fi
+
+      if [[ -f "$AWS_CONFIG_FILE" ]] && grep -q "^\[profile $AWS_PROFILE\]" "$AWS_CONFIG_FILE"; then
+        sed -i.bak "/^\[profile $AWS_PROFILE\]/,/^\[/d" "$AWS_CONFIG_FILE"
+        echo "[✅] Removed config for profile: $AWS_PROFILE"
+      fi
+
+      # Optional cleanup of .bak files
+      rm -f "$AWS_CRED_FILE.bak" "$AWS_CONFIG_FILE.bak" 2>/dev/null || true
+
+      echo "[🧹] Uninstall complete."
+      exit 0
     fi
-
-    # Remove config
-    if [[ -d "$CONFIG_DIR" ]]; then
-      rm -rf "$CONFIG_DIR"
-      echo "[✅] Removed config dir: $CONFIG_DIR"
-    fi
-
-    # Remove AWS profile credentials
-    AWS_CRED_FILE="$HOME/.aws/credentials"
-    AWS_CONFIG_FILE="$HOME/.aws/config"
-
-    if grep -q "^\[$AWS_PROFILE\]" "$AWS_CRED_FILE" 2>/dev/null; then
-      sed -i.bak "/^\[$AWS_PROFILE\]/,/^\[/d" "$AWS_CRED_FILE"
-      echo "[✅] Removed credentials for profile: $AWS_PROFILE"
-    fi
-
-    if grep -q "^\[$AWS_PROFILE\]" "$AWS_CONFIG_FILE" 2>/dev/null; then
-      sed -i.bak "/^\[$AWS_PROFILE\]/,/^\[/d" "$AWS_CONFIG_FILE"
-      echo "[✅] Removed config for profile: $AWS_PROFILE"
-    fi
-
-    echo "[🧹] Uninstall complete."
-    exit 0
     ;;
   --update)
       echo "[⬇️] Updating ssm-connect from GitHub..."
