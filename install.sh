@@ -1,0 +1,126 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/refs/heads/master/ssm-connect.sh"
+SCRIPT_PATH="/usr/local/bin/ssm-connect"
+
+echo "[🔧] Installing ssm-connect..."
+
+# === Detect OS ===
+OS="$(uname -s)"
+IS_MAC=false
+IS_LINUX=false
+case "$OS" in
+  Darwin) IS_MAC=true ;;
+  Linux)  IS_LINUX=true ;;
+  *) echo "[❌] Unsupported OS: $OS"; exit 1 ;;
+esac
+
+if $IS_LINUX; then
+  # === Require sudo/root ===
+  if [[ "$EUID" -ne 0 ]]; then
+    echo "[❌] Please run this script using: sudo ./install.sh"
+    exit 1
+  fi
+fi
+
+# === Sudo user's context ===
+DEFAULT_USER=${SUDO_USER:-$(whoami)}
+HOME_DIR=$(eval echo "~$DEFAULT_USER")
+ALIAS_DIR="$HOME_DIR/.ssm-connect"
+ALIAS_FILE="$ALIAS_DIR/aliases"
+
+# === Helper for install check ===
+install_if_missing_linux() {
+  for pkg in "$@"; do
+    if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+      echo "[📦] Installing $pkg..."
+      apt install -y -qq "$pkg"
+    else
+      echo "[✅] $pkg already installed."
+    fi
+  done
+}
+
+install_if_missing_brew() {
+  for pkg in "$@"; do
+    if ! brew list --formula | grep -q "^$pkg$"; then
+      echo "[📦] Installing $pkg..."
+      brew install --quiet "$pkg" >/dev/null 2>&1 || echo "[ERROR] Failed to install <package>"
+    else
+      echo "[✅] $pkg already installed."
+    fi
+  done
+}
+
+# === Install system packages ===
+if $IS_LINUX; then
+  echo "[📦] Checking required packages on Linux..."
+  apt update -qq
+  install_if_missing_linux curl jq fzf unzip
+elif $IS_MAC; then
+  echo "[📦] Checking required packages on macOS..."
+  if ! command -v brew &>/dev/null; then
+    echo "[❌] Homebrew not found. Please install it from https://brew.sh/"
+    exit 1
+  fi
+  install_if_missing_brew curl jq fzf unzip
+fi
+
+# === Install AWS CLI ===
+if ! command -v aws &>/dev/null; then
+  echo "[🌐] Installing AWS CLI..."
+  if $IS_LINUX; then
+    curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
+    unzip -q -o /tmp/awscliv2.zip -d /tmp
+    /tmp/aws/install
+    rm -rf /tmp/aws /tmp/awscliv2.zip
+  elif $IS_MAC; then
+    curl -fsSL "https://awscli.amazonaws.com/AWSCLIV2.pkg" -o "/tmp/AWSCLIV2.pkg"
+    sudo installer -pkg /tmp/AWSCLIV2.pkg -target /
+    rm /tmp/AWSCLIV2.pkg
+  fi
+else
+  echo "[✅] AWS CLI already installed."
+fi
+
+# === Install Session Manager Plugin ===
+if ! command -v session-manager-plugin &>/dev/null; then
+  echo "[📦] Installing Session Manager Plugin..."
+  if $IS_LINUX; then
+    curl -fsSL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o /tmp/session-manager-plugin.deb
+    dpkg -i /tmp/session-manager-plugin.deb
+    rm /tmp/session-manager-plugin.deb
+  elif $IS_MAC; then
+    TMP_DIR="/tmp/ssm-install"
+    mkdir -p "$TMP_DIR"
+
+    echo "[📦] Downloading Session Manager Plugin for macOS..."
+    curl -fsSL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/mac/sessionmanager-bundle.zip" -o "$TMP_DIR/ssm.zip"
+    unzip -q -o "$TMP_DIR/ssm.zip" -d "$TMP_DIR/sessionmanager-bundle"
+
+    echo "[📦] Installing plugin..."
+    sudo installer -pkg "$TMP_DIR/sessionmanager-bundle/sessionmanagerplugin.pkg" -target /
+
+    rm -rf "$TMP_DIR"
+  fi
+else
+  echo "[✅] Session Manager Plugin already installed."
+fi
+
+# === Setup alias config dir ===
+echo "[📁] Setting up alias directory at $ALIAS_DIR"
+mkdir -p "$ALIAS_DIR"
+touch "$ALIAS_FILE"
+chown -R "$DEFAULT_USER:$DEFAULT_USER" "$ALIAS_DIR"
+chmod 700 "$ALIAS_DIR"
+chmod 600 "$ALIAS_FILE"
+
+# === Download CLI script ===
+echo "[⬇️] Installing ssm-connect CLI to $SCRIPT_PATH"
+curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH"
+chmod +x "$SCRIPT_PATH"
+
+echo
+echo "[✅] 'ssm-connect' installed successfully!"
+echo "[ℹ️] Run: ssm-connect --help"
