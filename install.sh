@@ -146,9 +146,16 @@ chmod +x "$SCRIPT_PATH"
 VERSION_FILE="$ALIAS_DIR/version"
 mkdir -p "$(dirname "$VERSION_FILE")"
 curl -fsSL "$REMOTE_VERSION_URL" -o "$VERSION_FILE"
-# Set ownership and permissions
-chown "$DEFAULT_USER:$DEFAULT_USER" "$VERSION_FILE"
-chmod 644 "$VERSION_FILE"
+# Set ownership and permissions (Linux only)
+if $IS_LINUX; then
+  if id "$DEFAULT_USER" &>/dev/null; then
+    echo "[🔧] Setting ownership and permissions for version file..."
+    sudo chown "$DEFAULT_USER:$DEFAULT_USER" "$VERSION_FILE"
+    chmod 644 "$VERSION_FILE"
+  else
+    echo "[⚠️] Warning: Could not find user $DEFAULT_USER, skipping chown for version file."
+  fi
+fi
 
 echo
 echo "[✅] 'ssm-connect' installed successfully!"
