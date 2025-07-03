@@ -6,59 +6,63 @@ AWS_REGION="ap-south-1"
 CONFIG_DIR="$HOME/.ssm-connect"
 ALIAS_FILE="$CONFIG_DIR/aliases"
 VERSION_FILE="$CONFIG_DIR/version"
-UPDATE_FLAG="$CONFIG_DIR/update_available"
+REMOTE_VERSION_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/version"
+SCRIPT_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/ssm-connect.sh"
 SCRIPT_PATH="/usr/local/bin/ssm-connect"
-GITHUB_RAW_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/refs/heads/master/ssm-connect.sh"
 
-# === Ensure config dir exists ===
+# === Ensure config dir and version ===
 mkdir -p "$CONFIG_DIR"
 touch "$ALIAS_FILE"
 chmod 600 "$ALIAS_FILE"
 
-# === Version management ===
-if [[ ! -f "$VERSION_FILE" ]]; then
-  echo "0.0.0" > "$VERSION_FILE"
+# === Version Check (non-blocking) ===
+check_for_update() {
+  if [[ -f "$VERSION_FILE" ]]; then
+    LOCAL_VERSION=$(cat "$VERSION_FILE")
+  else
+    LOCAL_VERSION="0.0.0"
+  fi
+
+  LATEST_VERSION=$(curl -fsSL "$REMOTE_VERSION_URL" || echo "$LOCAL_VERSION")
+
+  if [[ "$LATEST_VERSION" != "$LOCAL_VERSION" ]]; then
+    echo "[⬆️] New version available: $LATEST_VERSION (current: $LOCAL_VERSION)"
+    echo "     Run: ssm-connect --update to upgrade."
+  fi
+}
+
+# === Update Command ===
+if [[ "${1:-}" == "--update" ]]; then
+  echo "[⬇️] Updating ssm-connect from GitHub..."
+  curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH"
+  chmod +x "$SCRIPT_PATH"
+  curl -fsSL "$REMOTE_VERSION_URL" -o "$VERSION_FILE"
+  echo "[✅] ssm-connect updated successfully!"
+  exit 0
 fi
-SCRIPT_VERSION=$(cat "$VERSION_FILE")
+
+# === Run version check in background ===
+check_for_update &
 
 # === Check required tools ===
-for cmd in aws fzf curl; do
+for cmd in aws fzf; do
   if ! command -v "$cmd" &>/dev/null; then
     echo "[ERROR] Missing required tool: $cmd"
     exit 1
   fi
 done
 
-# === Background update checker ===
-(
-  LATEST_VERSION=$(curl -fsSL "$GITHUB_RAW_URL" | grep '^SCRIPT_VERSION=' | cut -d'"' -f2 || echo "")
-  CURRENT_VERSION=$(cat "$VERSION_FILE" 2>/dev/null || echo "0.0.0")
-
-  if [[ -n "$LATEST_VERSION" && "$LATEST_VERSION" != "$CURRENT_VERSION" ]]; then
-    echo "[⬆️] New version available: $LATEST_VERSION (current: $CURRENT_VERSION)" > "$UPDATE_FLAG"
-  else
-    rm -f "$UPDATE_FLAG"
-  fi
-) &
-
-# === Notify update if available ===
-if [[ -f "$UPDATE_FLAG" ]]; then
-  cat "$UPDATE_FLAG"
-  echo "[ℹ️] Run: ssm-connect --update to upgrade."
-fi
-
 show_help() {
 cat <<EOF
 Usage:
-  ssm-connect                      Launch interactive instance selector
-  ssm-connect <alias>              Connect directly to instance using alias
+  ssm-connect                     Launch interactive instance selector
+  ssm-connect <alias>             Connect directly to instance using alias
 
-  ssm-connect --add-alias -a a id  Add or update alias (alias, instance-id)
-  ssm-connect --remove-alias -r a  Remove an alias
-  ssm-connect --list-aliases -l    List all aliases
-  ssm-connect --update             Update the CLI tool
-  ssm-connect --version            Show current version
-  ssm-connect --help         -h    Show this help
+  ssm-connect --add-alias -a a id    Add or update alias (alias, instance-id)
+  ssm-connect --remove-alias -r a    Remove an alias
+  ssm-connect --list-aliases -l      List all aliases
+  ssm-connect --update               Update to latest version
+  ssm-connect --help         -h      Show this help
 EOF
 }
 
@@ -67,25 +71,6 @@ case "${1:-}" in
     show_help
     exit 0
     ;;
-
-  --version)
-    echo "ssm-connect version $SCRIPT_VERSION"
-    exit 0
-    ;;
-
-  --update)
-    echo "[⬇️] Updating ssm-connect from GitHub..."
-    sudo curl -fsSL "$GITHUB_RAW_URL" -o "$SCRIPT_PATH"
-    sudo chmod +x "$SCRIPT_PATH"
-
-    NEW_VERSION=$(curl -fsSL "$GITHUB_RAW_URL" | grep '^SCRIPT_VERSION=' | cut -d'"' -f2 || echo "")
-    echo "$NEW_VERSION" > "$VERSION_FILE"
-    rm -f "$UPDATE_FLAG"
-
-    echo "[✅] Updated to version $NEW_VERSION"
-    exit 0
-    ;;
-
   --add-alias|-a)
     if [[ $# -ne 3 ]]; then
       echo "[ERROR] Usage: ssm-connect -a <alias> <instance-id>"
@@ -93,12 +78,12 @@ case "${1:-}" in
     fi
     NEW_ALIAS="$2"
     NEW_ID="$3"
-    sed -i "/^$NEW_ALIAS /d" "$ALIAS_FILE"
+
+    sed -i.bak "/^$NEW_ALIAS /d" "$ALIAS_FILE"
     echo "$NEW_ALIAS $NEW_ID" >> "$ALIAS_FILE"
     echo "[✅] Alias '$NEW_ALIAS' → '$NEW_ID' added."
     exit 0
     ;;
-
   --remove-alias|-r)
     if [[ $# -ne 2 ]]; then
       echo "[ERROR] Usage: ssm-connect -r <alias>"
@@ -106,14 +91,13 @@ case "${1:-}" in
     fi
     TO_REMOVE="$2"
     if grep -q "^$TO_REMOVE " "$ALIAS_FILE"; then
-      sed -i "/^$TO_REMOVE /d" "$ALIAS_FILE"
+      sed -i.bak "/^$TO_REMOVE /d" "$ALIAS_FILE"
       echo "[🗑️] Alias '$TO_REMOVE' removed."
     else
       echo "[WARN] Alias '$TO_REMOVE' not found."
     fi
     exit 0
     ;;
-
   --list-aliases|-l)
     if [[ ! -s "$ALIAS_FILE" ]]; then
       echo "[📭] No aliases found."
@@ -123,15 +107,14 @@ case "${1:-}" in
     column -t "$ALIAS_FILE"
     exit 0
     ;;
-
   --*|-*)
-    echo "[ERROR] Unknown option: $1"
+    echo "[❌] Unknown option: $1"
     show_help
     exit 1
     ;;
 esac
 
-# === AWS profile check ===
+# === AWS Profile Config ===
 if ! aws configure list-profiles | grep -q "^$AWS_PROFILE$"; then
   echo "[INFO] AWS profile '$AWS_PROFILE' not found. Configuring..."
   aws configure --profile "$AWS_PROFILE"
@@ -143,7 +126,7 @@ if [[ $# -eq 1 ]]; then
   INSTANCE_ID=$(grep "^$ALIAS_NAME " "$ALIAS_FILE" | awk '{print $2}')
 
   if [[ -z "$INSTANCE_ID" ]]; then
-    echo "[ERROR] Alias '$ALIAS_NAME' not found."
+    echo "[ERROR] Alias '$ALIAS_NAME' not found in $ALIAS_FILE"
     exit 1
   fi
 
@@ -154,7 +137,7 @@ fi
 
 # === Interactive connect ===
 if [[ ! -s "$ALIAS_FILE" ]]; then
-  echo "[📭] No aliases found. Add one using: ssm-connect --add-alias <alias> <instance-id>"
+  echo "[📭] No aliases found. Use: ssm-connect --add-alias <alias> <id>"
   exit 0
 fi
 
@@ -162,7 +145,7 @@ echo "[🔍] Selecting instance interactively..."
 SELECTED_LINE=$(cat "$ALIAS_FILE" | fzf --prompt="Select instance: ")
 
 if [[ -z "$SELECTED_LINE" ]]; then
-  echo "[WARN] No selection made."
+  echo "[⚠️] No instance selected."
   exit 0
 fi
 
@@ -175,4 +158,4 @@ aws ssm start-session \
   --region "$AWS_REGION" \
   --profile "$AWS_PROFILE"
 
-echo "[💨] Session ended. Reconnect anytime using: ssm-connect $ALIAS_NAME"
+echo "[✅] Session ended."

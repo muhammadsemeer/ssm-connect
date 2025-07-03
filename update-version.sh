@@ -1,15 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-VERSION_FILE="$HOME/.ssm-connect/version"
-
-if [[ ! -f "$VERSION_FILE" ]]; then
-  echo "0.0.0" > "$VERSION_FILE"
-fi
-
-CURRENT_VERSION=$(cat "$VERSION_FILE")
-
-IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+# === Config ===
+REPO_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/version"
+LOCAL_VERSION_FILE="$HOME/.ssm-connect/version"
+GIT_REPO_PATH="$(dirname "$0")"  # Assumes script is in git repo
+GIT_VERSION_FILE="$GIT_REPO_PATH/version"
 
 usage() {
   echo "Usage: $0 [patch|minor|major]"
@@ -20,9 +16,19 @@ if [[ $# -ne 1 ]]; then
   usage
 fi
 
-INCREMENT_TYPE="$1"
+BUMP_TYPE="$1"
 
-case "$INCREMENT_TYPE" in
+# === Fetch latest remote version from GitHub ===
+echo "[🌐] Fetching latest version from GitHub..."
+LATEST_REMOTE_VERSION=$(curl -fsSL "$REPO_URL" || echo "0.0.0")
+if [[ -z "$LATEST_REMOTE_VERSION" ]]; then
+  echo "[❌] Failed to fetch latest version."
+  exit 1
+fi
+
+IFS='.' read -r MAJOR MINOR PATCH <<< "$LATEST_REMOTE_VERSION"
+
+case "$BUMP_TYPE" in
   patch)
     PATCH=$((PATCH + 1))
     ;;
@@ -41,6 +47,20 @@ case "$INCREMENT_TYPE" in
 esac
 
 NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
-echo "$NEW_VERSION" > "$VERSION_FILE"
 
-echo "[✅] Version updated: $CURRENT_VERSION → $NEW_VERSION"
+# === Update local and repo version file ===
+echo "$NEW_VERSION" > "$LOCAL_VERSION_FILE"
+echo "$NEW_VERSION" > "$GIT_VERSION_FILE"
+
+echo "[✅] Version bumped: $LATEST_REMOTE_VERSION → $NEW_VERSION"
+
+# === Commit and push if in Git repo ===
+if git -C "$GIT_REPO_PATH" rev-parse 2>/dev/null; then
+  cd "$GIT_REPO_PATH"
+  git add version
+  git commit -m "chore: bump version to $NEW_VERSION"
+  git push origin master
+  echo "[🚀] Version pushed to GitHub."
+else
+  echo "[ℹ️] Not in a git repo. Skipping push."
+fi
