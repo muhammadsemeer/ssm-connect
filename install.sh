@@ -132,7 +132,7 @@ fi
 
 # === Download CLI script ===
 echo "[⬇️] Installing ssm-connect CLI to $SCRIPT_PATH"
-curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH"
+sudo curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH"
 chmod +x "$SCRIPT_PATH"
 # === Version file setup ===
 VERSION_FILE="$ALIAS_DIR/version"
