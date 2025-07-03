@@ -30,6 +30,7 @@ Usage:
   ssm-connect --remove-alias -r a    Remove an alias
   ssm-connect --list-aliases -l      List all aliases
   ssm-connect --help         -h      Show this help
+  ssm-connect --uninstall --remove   Uninstall script and remove all aliases
 EOF
 }
 
@@ -75,6 +76,37 @@ case "${1:-}" in
     column -t "$ALIAS_FILE"
     exit 0
     ;;
+
+    --uninstall|--remove)
+      echo "[⚠️] This will remove 'ssm-connect', all saved aliases, and AWS profile '$AWS_PROFILE'"
+      read -p "Are you sure? (y/N): " confirm
+      if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        echo "[🗑️] Removing script from /usr/local/bin/ssm-connect"
+        sudo rm -f /usr/local/bin/ssm-connect
+
+        echo "[🗑️] Deleting config directory $CONFIG_DIR"
+        rm -rf "$CONFIG_DIR"
+
+        echo "[🧹] Cleaning AWS profile '$AWS_PROFILE'"
+        AWS_CONFIG="$HOME/.aws/config"
+        AWS_CREDS="$HOME/.aws/credentials"
+
+        if [[ -f "$AWS_CONFIG" ]]; then
+          sed -i.bak "/^\[profile $AWS_PROFILE\]/,/^\[.*\]/ {/^\[.*\]/!d}" "$AWS_CONFIG"
+          sed -i.bak "/^\[profile $AWS_PROFILE\]/d" "$AWS_CONFIG"
+        fi
+
+        if [[ -f "$AWS_CREDS" ]]; then
+          sed -i.bak "/^\[$AWS_PROFILE\]/,/^\[.*\]/ {/^\[.*\]/!d}" "$AWS_CREDS"
+          sed -i.bak "/^\[$AWS_PROFILE\]/d" "$AWS_CREDS"
+        fi
+
+        echo "[✅] Uninstalled successfully."
+      else
+        echo "[❎] Aborted."
+      fi
+      exit 0
+      ;;
 
   --*|-*)
       echo "Unknown option: $1"
