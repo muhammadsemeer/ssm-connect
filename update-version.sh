@@ -59,6 +59,12 @@ if git -C "$GIT_REPO_PATH" rev-parse 2>/dev/null; then
   cd "$GIT_REPO_PATH"
   git add version
   git commit -m "chore: bump version to $NEW_VERSION"
+  # ask to push
+  read -p "[🔄] Do you want to push the changes to GitHub? (y/n): " push_choice
+  if [[ "$push_choice" != "y" ]]; then
+    echo "[ℹ️] Skipping push to GitHub."
+    exit 0
+  fi
   git push origin master
   echo "[🚀] Version pushed to GitHub."
 else
