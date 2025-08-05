@@ -91,7 +91,22 @@ Usage:
   ssm-connect --help         -h      Show this help
   ssm-connect --version
   ssm-connect --uninstall            Uninstall ssm-connect
+  ssm-connect --whats-new            Show what's new in the latest version
 EOF
+}
+
+print_changelog() {
+  local version="$1"
+  local changelog_file="CHANGELOG.md"
+
+  if [[ ! -f "$changelog_file" ]]; then
+    echo "[ERROR] $changelog_file not found"
+    return 1
+  fi
+
+  echo "[ℹ️] What's new in version $VERSION:"
+  # Print from the version header until the next version header or EOF
+  sed -n "/^## \[$version\]/,/^## \[/p" "$changelog_file" | sed '$d'
 }
 
 get_instance_id() {
@@ -256,12 +271,21 @@ case "${1:-}" in
     echo "[✅] SCP operation completed successfully!"
     exit 0
     ;;
+  --whats-new)
+    # read from changelog show new features
+    VERSION=$(cat "$VERSION_FILE")
+    print_changelog "$VERSION"
+    exit 0
+    ;;
   --update)
       echo "[⬇️] Updating ssm-connect..."
       sudo curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH"
       sudo chmod +x "$SCRIPT_PATH"
       curl -fsSL "$REMOTE_VERSION_URL" -o "$VERSION_FILE"
       echo "[✅] ssm-connect updated successfully!"
+      # read from changelog show new features
+      VERSION=$(cat "$VERSION_FILE")
+      print_changelog "$VERSION"
       exit 0
       ;;
   --*|-*)
