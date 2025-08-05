@@ -1,4 +1,4 @@
-# Change Log
+# Changelog
 
 ## [1.0.0] - 2025-07-03
 ### Added
@@ -10,3 +10,10 @@
 - Support for AWS CLI configuration during first use
 - Documentation for installation and usage in README.md
 - Basic error handling for missing AWS profile
+
+## [1.1.0] - 2025-08-05
+### Added
+- Added scp functionality to copy files to and from instances
+
+### Changed
+- Improved SSM connection handling
