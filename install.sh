@@ -17,10 +17,16 @@ case "$OS" in
   *) echo "[❌] Unsupported OS: $OS"; exit 1 ;;
 esac
 
+IS_ARCH=false
 if $IS_LINUX && [[ "$EUID" -ne 0 ]]; then
+  if grep -qi 'arch' /etc/os-release; then
+      IS_ARCH=true
+  fi
   echo "[❌] Please run this script using: sudo ./install.sh"
   exit 1
 fi
+
+echo "[ℹ️] Detected OS: $OS, Architecture: $ARCH"
 
 # === Sudo user's context ===
 DEFAULT_USER=${SUDO_USER:-$(whoami)}
@@ -70,10 +76,30 @@ install_if_missing_brew() {
   done
 }
 
+install_if_missing_pacman() {
+  missing_pkgs=()
+  for pkg in "$@"; do
+    if ! pacman -Q "$pkg" &>/dev/null; then
+      missing_pkgs+=("$pkg")
+    fi
+  done
+
+  if [[ ${#missing_pkgs[@]} -gt 0 ]]; then
+    echo "[📦] Installing missing packages: ${missing_pkgs[*]}"
+    sudo pacman -Sy --noconfirm "${missing_pkgs[@]}"
+  else
+    echo "[✅] All required packages are already installed."
+  fi
+}
+
 # === Install system packages ===
 if $IS_LINUX; then
   echo "[📦] Checking required packages on Linux..."
-  install_if_missing_linux curl jq fzf unzip
+  if $IS_ARCH; then
+        install_if_missing_pacman curl jq fzf unzip git base-devel
+  else
+      install_if_missing_linux curl jq fzf unzip
+  fi
 elif $IS_MAC; then
   echo "[📦] Checking required packages on macOS..."
   if ! command -v brew &>/dev/null; then
@@ -104,9 +130,27 @@ fi
 if ! command -v session-manager-plugin &>/dev/null; then
   echo "[📦] Installing Session Manager Plugin..."
   if $IS_LINUX; then
-    curl -fsSL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o /tmp/session-manager-plugin.deb
-    dpkg -i /tmp/session-manager-plugin.deb
-    rm /tmp/session-manager-plugin.deb
+    if $IS_ARCH; then
+      echo "[📦] Installing Session Manager Plugin from AUR..."
+
+      TMP_AUR_DIR="/tmp/aws-session-manager-plugin"
+      rm -rf "$TMP_AUR_DIR"
+      git clone --depth=1 https://aur.archlinux.org/aws-session-manager-plugin.git "$TMP_AUR_DIR"
+      cd "$TMP_AUR_DIR"
+
+      echo "[⚙️] Building and installing package..."
+      sudo -u "$DEFAULT_USER" makepkg -si --noconfirm || {
+        echo "[❌] Failed to install session-manager-plugin from AUR"
+        exit 1
+      }
+
+      cd -
+      rm -rf "$TMP_AUR_DIR"
+    else
+      curl -fsSL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o /tmp/session-manager-plugin.deb
+      dpkg -i /tmp/session-manager-plugin.deb
+      rm /tmp/session-manager-plugin.deb
+    fi
   elif $IS_MAC; then
     TMP_DIR="/tmp/ssm-install"
     mkdir -p "$TMP_DIR"
