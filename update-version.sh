@@ -12,6 +12,13 @@ usage() {
   exit 1
 }
 
+# check if branch is master
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [[ "$CURRENT_BRANCH" != "master" ]]; then
+  echo "[⚠️] You are not on the master branch. Current branch: $CURRENT_BRANCH"
+  exit 1
+fi
+
 if [[ $# -ne 1 ]]; then
   usage
 fi
