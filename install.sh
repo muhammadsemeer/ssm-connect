@@ -11,22 +11,22 @@ OS="$(uname -s)"
 ARCH="$(uname -m)"
 IS_MAC=false
 IS_LINUX=false
+IS_ARCH=false
 case "$OS" in
   Darwin) IS_MAC=true ;;
-  Linux)  IS_LINUX=true ;;
+  Linux)
+    IS_LINUX=true
+    if grep -qi 'arch' /etc/os-release; then
+          IS_ARCH=true
+    fi
+  ;;
   *) echo "[❌] Unsupported OS: $OS"; exit 1 ;;
 esac
 
-IS_ARCH=false
 if $IS_LINUX && [[ "$EUID" -ne 0 ]]; then
-  if grep -qi 'arch' /etc/os-release; then
-      IS_ARCH=true
-  fi
   echo "[❌] Please run this script using: sudo ./install.sh"
   exit 1
 fi
-
-echo "[ℹ️] Detected OS: $OS, Architecture: $ARCH"
 
 # === Sudo user's context ===
 DEFAULT_USER=${SUDO_USER:-$(whoami)}
@@ -133,19 +133,16 @@ if ! command -v session-manager-plugin &>/dev/null; then
     if $IS_ARCH; then
       echo "[📦] Installing Session Manager Plugin from AUR..."
 
-      TMP_AUR_DIR="/tmp/aws-session-manager-plugin"
-      rm -rf "$TMP_AUR_DIR"
-      git clone --depth=1 https://aur.archlinux.org/aws-session-manager-plugin.git "$TMP_AUR_DIR"
-      cd "$TMP_AUR_DIR"
+      BUILD_DIR="$HOME_DIR/.cache/aur/aws-session-manager-plugin"
+      rm -rf "$BUILD_DIR"
+      sudo -u "$DEFAULT_USER" git clone --depth=1 https://aur.archlinux.org/aws-session-manager-plugin.git "$BUILD_DIR"
 
-      echo "[⚙️] Building and installing package..."
-      sudo -u "$DEFAULT_USER" makepkg -si --noconfirm || {
-        echo "[❌] Failed to install session-manager-plugin from AUR"
-        exit 1
-      }
+      echo "[⚙️] Building package as $DEFAULT_USER..."
+      cd "$BUILD_DIR"
+      sudo -u "$DEFAULT_USER" bash -c "cd '$BUILD_DIR' && makepkg -si --noconfirm"
 
       cd -
-      rm -rf "$TMP_AUR_DIR"
+      rm -rf "$BUILD_DIR"
     else
       curl -fsSL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o /tmp/session-manager-plugin.deb
       dpkg -i /tmp/session-manager-plugin.deb
