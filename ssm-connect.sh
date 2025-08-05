@@ -9,6 +9,7 @@ VERSION_FILE="$CONFIG_DIR/version"
 REMOTE_VERSION_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/version"
 SCRIPT_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/ssm-connect.sh"
 SCRIPT_PATH="/usr/local/bin/ssm-connect"
+S3_BUCKET="ssm-scp"
 
 # === Ensure config dir and version ===
 mkdir -p "$CONFIG_DIR"
@@ -47,6 +48,34 @@ for cmd in aws fzf; do
   fi
 done
 
+check_ssm_command() {
+  local COMMAND_ID="$1"
+  echo "[⏳] Waiting for SSM command ($COMMAND_ID) to complete..."
+
+  while true; do
+    STATUS=$(aws ssm list-command-invocations \
+      --region "$AWS_REGION" \
+      --profile "$AWS_PROFILE" \
+      --command-id "$COMMAND_ID" \
+      --details \
+      --query "CommandInvocations[0].Status" \
+      --output text)
+
+    if [[ "$STATUS" == "Success" ]]; then
+      break
+    elif [[ "$STATUS" == "Failed" || "$STATUS" == "Cancelled" || "$STATUS" == "TimedOut" ]]; then
+      echo "[❌] SSM command failed with status: $STATUS"
+      echo "[ℹ️] Ensure the instance has AWS CLI installed in the home directory of the user 'ubuntu'"
+      echo "[ℹ️] No need to configure AWS CLI on the instance, it will use the IAM role attached to the instance."
+      echo "[ℹ️] If you encounter issues, please check the instance's IAM role permissions. It should have permissions to access S3 $S3_BUCKET bucket."
+      exit 1
+    fi
+
+    sleep 2
+  done
+}
+
+
 show_help() {
 cat <<EOF
 Usage:
@@ -56,11 +85,18 @@ Usage:
   ssm-connect --add-alias -a a id    Add or update alias (alias, instance-id)
   ssm-connect --remove-alias -r a    Remove an alias
   ssm-connect --list-aliases -l      List all aliases
+  ssm-connect --scp <alias> <source> <destination>
+                                   Copy files using SCP (alias, source, destination)
   ssm-connect --update               Update to latest version
   ssm-connect --help         -h      Show this help
   ssm-connect --version
   ssm-connect --uninstall            Uninstall ssm-connect
 EOF
+}
+
+get_instance_id() {
+  local ALIAS_NAME="$1"
+  grep "^$ALIAS_NAME " "$ALIAS_FILE" | awk '{print $2}'
 }
 
 case "${1:-}" in
@@ -153,8 +189,75 @@ case "${1:-}" in
       exit 0
     fi
     ;;
+  --scp)
+    if [[ $# -ne 4 ]]; then
+      echo "[ERROR] Usage: ssm-connect --scp <alias> <source> <destination>"
+      exit 1
+    fi
+
+    SCP_ALIAS="$2"
+    SOURCE="$3"
+    DESTINATION="$4"
+
+    INSTANCE_ID=$(get_instance_id "$SCP_ALIAS")
+    if [[ -z "$INSTANCE_ID" ]]; then
+      echo "[ERROR] Alias '$SCP_ALIAS' not found."
+      exit 1
+    fi
+
+    TMP_NAME="ssm-tmp-$(date +%s)-$RANDOM"
+    TMP_S3="s3://$S3_BUCKET/$TMP_NAME"
+
+    if [[ -f "$SOURCE" ]]; then
+      echo "[📤] Uploading local file to S3..."
+      aws s3 cp "$SOURCE" "$TMP_S3" --region "$AWS_REGION" --profile "$AWS_PROFILE"
+
+      echo "[📦] Triggering SSM command to copy from S3 to instance..."
+      COMMAND_ID=$(aws ssm send-command \
+        --region "$AWS_REGION" \
+        --profile "$AWS_PROFILE" \
+        --instance-ids "$INSTANCE_ID" \
+        --document-name "AWS-RunShellScript" \
+        --comment "ssm-connect scp upload" \
+        --parameters "commands=[
+          \"sudo -u ubuntu bash -c 'cd ~ && aws s3 cp $TMP_S3 $DESTINATION'\",
+          \"sudo -u ubuntu bash -c 'aws s3 rm $TMP_S3'\"
+        ]" \
+        --query "Command.CommandId" --output text)
+
+      check_ssm_command "$COMMAND_ID"
+
+      echo "[✅] Upload complete."
+
+    else
+      echo "[📦] Triggering SSM command to upload from instance to S3..."
+      COMMAND_ID=$(aws ssm send-command \
+        --region "$AWS_REGION" \
+        --profile "$AWS_PROFILE" \
+        --instance-ids "$INSTANCE_ID" \
+        --document-name "AWS-RunShellScript" \
+        --comment "ssm-connect scp download" \
+        --parameters "commands=[
+          \"sudo -u ubuntu bash -c 'cd ~ && aws s3 cp $SOURCE $TMP_S3'\"
+        ]" \
+        --query "Command.CommandId" --output text)
+
+      check_ssm_command "$COMMAND_ID"
+
+      echo "[📥] Downloading file from S3..."
+      aws s3 cp "$TMP_S3" "$DESTINATION" --region "$AWS_REGION" --profile "$AWS_PROFILE"
+
+      echo "[🧹] Cleaning up S3..."
+      aws s3 rm "$TMP_S3" --region "$AWS_REGION" --profile "$AWS_PROFILE"
+
+      echo "[✅] Download complete."
+    fi
+
+    echo "[✅] SCP operation completed successfully!"
+    exit 0
+    ;;
   --update)
-      echo "[⬇️] Updating ssm-connect from GitHub..."
+      echo "[⬇️] Updating ssm-connect..."
       sudo curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH"
       sudo chmod +x "$SCRIPT_PATH"
       curl -fsSL "$REMOTE_VERSION_URL" -o "$VERSION_FILE"
@@ -177,7 +280,7 @@ fi
 # === Direct connect ===
 if [[ $# -eq 1 ]]; then
   ALIAS_NAME="$1"
-  INSTANCE_ID=$(grep "^$ALIAS_NAME " "$ALIAS_FILE" | awk '{print $2}')
+  INSTANCE_ID=$(get_instance_id "$ALIAS_NAME")
 
   if [[ -z "$INSTANCE_ID" ]]; then
     echo "[ERROR] Alias '$ALIAS_NAME' not found in $ALIAS_FILE"
