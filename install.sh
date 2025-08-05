@@ -11,9 +11,15 @@ OS="$(uname -s)"
 ARCH="$(uname -m)"
 IS_MAC=false
 IS_LINUX=false
+IS_ARCH=false
 case "$OS" in
   Darwin) IS_MAC=true ;;
-  Linux)  IS_LINUX=true ;;
+  Linux)
+    IS_LINUX=true
+    if grep -qi 'arch' /etc/os-release; then
+          IS_ARCH=true
+    fi
+  ;;
   *) echo "[❌] Unsupported OS: $OS"; exit 1 ;;
 esac
 
@@ -70,10 +76,30 @@ install_if_missing_brew() {
   done
 }
 
+install_if_missing_pacman() {
+  missing_pkgs=()
+  for pkg in "$@"; do
+    if ! pacman -Q "$pkg" &>/dev/null; then
+      missing_pkgs+=("$pkg")
+    fi
+  done
+
+  if [[ ${#missing_pkgs[@]} -gt 0 ]]; then
+    echo "[📦] Installing missing packages: ${missing_pkgs[*]}"
+    sudo pacman -Sy --noconfirm "${missing_pkgs[@]}"
+  else
+    echo "[✅] All required packages are already installed."
+  fi
+}
+
 # === Install system packages ===
 if $IS_LINUX; then
   echo "[📦] Checking required packages on Linux..."
-  install_if_missing_linux curl jq fzf unzip
+  if $IS_ARCH; then
+        install_if_missing_pacman curl jq fzf unzip git base-devel
+  else
+      install_if_missing_linux curl jq fzf unzip
+  fi
 elif $IS_MAC; then
   echo "[📦] Checking required packages on macOS..."
   if ! command -v brew &>/dev/null; then
@@ -104,9 +130,24 @@ fi
 if ! command -v session-manager-plugin &>/dev/null; then
   echo "[📦] Installing Session Manager Plugin..."
   if $IS_LINUX; then
-    curl -fsSL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o /tmp/session-manager-plugin.deb
-    dpkg -i /tmp/session-manager-plugin.deb
-    rm /tmp/session-manager-plugin.deb
+    if $IS_ARCH; then
+      echo "[📦] Installing Session Manager Plugin from AUR..."
+
+      BUILD_DIR="$HOME_DIR/.cache/aur/aws-session-manager-plugin"
+      rm -rf "$BUILD_DIR"
+      sudo -u "$DEFAULT_USER" git clone --depth=1 https://aur.archlinux.org/aws-session-manager-plugin.git "$BUILD_DIR"
+
+      echo "[⚙️] Building package as $DEFAULT_USER..."
+      cd "$BUILD_DIR"
+      sudo -u "$DEFAULT_USER" bash -c "cd '$BUILD_DIR' && makepkg -si --noconfirm"
+
+      cd -
+      rm -rf "$BUILD_DIR"
+    else
+      curl -fsSL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o /tmp/session-manager-plugin.deb
+      dpkg -i /tmp/session-manager-plugin.deb
+      rm /tmp/session-manager-plugin.deb
+    fi
   elif $IS_MAC; then
     TMP_DIR="/tmp/ssm-install"
     mkdir -p "$TMP_DIR"
