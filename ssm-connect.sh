@@ -18,29 +18,53 @@ mkdir -p "$CONFIG_DIR"
 touch "$ALIAS_FILE"
 chmod 600 "$ALIAS_FILE"
 
-# === Version Check (non-blocking) ===
+UPDATE_INFO_FILE="${TMPDIR:-/tmp}/ssm-connect-update-info"
+LAST_CHECK_FILE="${TMPDIR:-/tmp}/ssm-connect-last-check"
+
 check_for_update() {
+  local local_version latest_version
+
   if [[ -f "$VERSION_FILE" ]]; then
-    LOCAL_VERSION=$(cat "$VERSION_FILE")
+    local_version=$(cat "$VERSION_FILE")
   else
-    LOCAL_VERSION="0.0.0"
+    local_version="0.0.0"
   fi
 
-  LATEST_VERSION=$(curl -fsSL "$REMOTE_VERSION_URL" 2>/dev/null || echo "$LOCAL_VERSION")
+  latest_version=$(curl -fsSL "$REMOTE_VERSION_URL" 2>/dev/null || echo "$local_version")
 
-  if [[ "$LATEST_VERSION" != "$LOCAL_VERSION" ]]; then
-    echo "[⬆️] New version available: $LATEST_VERSION (current: $LOCAL_VERSION)"
-    echo "[ℹ️] Run: ssm-connect --update to upgrade."
+  if [[ "$latest_version" != "$local_version" ]]; then
+    {
+      echo "[⬆️] New version available: $latest_version (current: $local_version)"
+      echo "[ℹ️] Run: ssm-connect --update to upgrade."
+    } > "$UPDATE_INFO_FILE"
+  else
+    : > "$UPDATE_INFO_FILE"  # Empty the file if no update
   fi
 }
 
-# === Run version check in background, only for main usage ===
-if [[ "${1:-}" != "--version" && "${1:-}" != "--help" && "${1:-}" != "-h" && "${1:-}" != "--update" && "${1:-}" != "--uninstall" ]]; then
-  check_for_update &
-else
-  # If version or help command, run immediately
-  check_for_update
-fi
+show_update_info() {
+  if [[ -s "$UPDATE_INFO_FILE" ]]; then
+    cat "$UPDATE_INFO_FILE"
+  fi
+}
+
+# === Run version check only once per day ===
+LAST_CHECK_FILE="${TMPDIR:-/tmp}/ssm-connect-last-check"
+
+run_daily_update_check() {
+  local today
+  today=$(date +%Y-%m-%d)
+
+  # If the file doesn't exist or is from a different day, run the check
+  if [[ ! -f "$LAST_CHECK_FILE" ]] || [[ $(cat "$LAST_CHECK_FILE") != "$today" ]]; then
+    check_for_update
+    echo "$today" > "$LAST_CHECK_FILE"
+  fi
+}
+
+run_daily_update_check >> /dev/null 2>&1 &
+
+show_update_info
 
 # === Check required tools ===
 for cmd in aws fzf; do
@@ -286,6 +310,14 @@ case "${1:-}" in
     exit 0
     ;;
   --update)
+      # dont run update remote version and local version is same check update info file
+      # if update info file is empty version is same
+      if [[ -f "$UPDATE_INFO_FILE" ]] && [[ ! -s "$UPDATE_INFO_FILE" ]]; then
+          echo "ssm-connect is already up to date. version $(cat "$VERSION_FILE")"
+          exit 0
+      fi
+
+
       echo "[⬇️] Updating ssm-connect..."
       sudo curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH"
       sudo chmod +x "$SCRIPT_PATH"
@@ -294,6 +326,8 @@ case "${1:-}" in
       echo "[✅] ssm-connect updated successfully!"
       # read from changelog show new features
       VERSION=$(cat "$VERSION_FILE")
+      # delete content of update info file
+      : > "$UPDATE_INFO_FILE"
       print_changelog "$VERSION"
       exit 0
       ;;
