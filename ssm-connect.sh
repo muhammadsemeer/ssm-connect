@@ -8,7 +8,9 @@ ALIAS_FILE="$CONFIG_DIR/aliases"
 VERSION_FILE="$CONFIG_DIR/version"
 REMOTE_VERSION_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/version"
 SCRIPT_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/ssm-connect.sh"
+REMOTE_CHANGELOG_FILE="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/CHANGELOG.md"
 SCRIPT_PATH="/usr/local/bin/ssm-connect"
+CHANGELOG_PATH="$CONFIG_DIR/CHANGELOG.md"
 S3_BUCKET="ssm-scp"
 
 # === Ensure config dir and version ===
@@ -97,16 +99,22 @@ EOF
 
 print_changelog() {
   local version="$1"
-  local changelog_file="CHANGELOG.md"
 
-  if [[ ! -f "$changelog_file" ]]; then
-    echo "[ERROR] $changelog_file not found"
+  if [[ ! -f "$CHANGELOG_PATH" ]]; then
+    echo "[ERROR] $CHANGELOG_PATH not found"
     return 1
   fi
 
   echo "[ℹ️] What's new in version $VERSION:"
-  # Print from the version header until the next version header or EOF
-  sed -n "/^## \[$version\]/,/^## \[/p" "$changelog_file" | sed '$d'
+  local block
+  block=$(sed -n "/^## \[$version\]/,/^## \[/p" "$CHANGELOG_PATH")
+
+  # Remove the last line if it’s another version header
+  if [[ $(tail -n 1 <<< "$block") =~ ^##\ \[ ]]; then
+    block=$(head -n -1 <<< "$block")
+  fi
+
+  echo "$block"
 }
 
 get_instance_id() {
@@ -282,6 +290,7 @@ case "${1:-}" in
       sudo curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH"
       sudo chmod +x "$SCRIPT_PATH"
       curl -fsSL "$REMOTE_VERSION_URL" -o "$VERSION_FILE"
+      curl -fsSL "$REMOTE_CHANGELOG_FILE" -o "$CHANGELOG_PATH"
       echo "[✅] ssm-connect updated successfully!"
       # read from changelog show new features
       VERSION=$(cat "$VERSION_FILE")
