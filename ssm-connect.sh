@@ -111,7 +111,7 @@ print_changelog() {
 
 get_instance_id() {
   local ALIAS_NAME="$1"
-  grep "^$ALIAS_NAME " "$ALIAS_FILE" | awk '{print $2}'
+  grep "^$ALIAS_NAME " "$ALIAS_FILE" | awk '{print $2}' || echo ""
 }
 
 case "${1:-}" in
@@ -331,7 +331,7 @@ if [[ -z "$SELECTED_LINE" ]]; then
 fi
 
 ALIAS_NAME=$(echo "$SELECTED_LINE" | awk '{print $1}')
-INSTANCE_ID=$(echo "$SELECTED_LINE" | awk '{print $2}')
+INSTANCE_ID=$(get_instance_id "$ALIAS_NAME")
 
 echo "[🔌] Connecting to '$ALIAS_NAME' ($INSTANCE_ID)..."
 aws ssm start-session \
