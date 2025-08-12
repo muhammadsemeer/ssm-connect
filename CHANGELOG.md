@@ -17,3 +17,16 @@
 
 ### Changed
 - Improved SSM connection handling
+
+## [1.2.0] - 2025-08-12
+### Changed
+- Improved Instance Id retrieval
+- Refactored update logic
+
+### Fixed
+- Changelog file missing
+
+## [1.2.1] - 2025-08-13
+### Fixed
+- Changelog issue
+
