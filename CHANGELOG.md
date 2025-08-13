@@ -26,7 +26,7 @@
 ### Fixed
 - Changelog file missing
 
-## [1.2.1] - 2025-08-13
-### Fixed
-- Changelog issue
+## [1.3.0] - 2025-08-13
+### Added
+- Usage tracking for instance selection in ssm-connect script and sort by usage in interactive mode
 
