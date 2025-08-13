@@ -12,6 +12,7 @@ REMOTE_CHANGELOG_FILE="https://raw.githubusercontent.com/muhammadsemeer/ssm-conn
 SCRIPT_PATH="/usr/local/bin/ssm-connect"
 CHANGELOG_PATH="$CONFIG_DIR/CHANGELOG.md"
 S3_BUCKET="ssm-scp"
+USAGE_FILE="$HOME/.cache/ssm-connect/usage"
 
 # === Ensure config dir and version ===
 mkdir -p "$CONFIG_DIR"
@@ -365,8 +366,44 @@ if [[ ! -s "$ALIAS_FILE" ]]; then
   exit 0
 fi
 
+mkdir -p "$(dirname "$USAGE_FILE")"
+touch "$USAGE_FILE"
+
 echo "[🔍] Selecting instance interactively..."
-SELECTED_LINE=$(cat "$ALIAS_FILE" | fzf --prompt="Select instance: ")
+
+if [[ ! -s "$USAGE_FILE" ]]; then
+  # If usage file is empty, sort aliases alphabetically
+  SORTED_LIST=$(sort "$ALIAS_FILE")
+else
+  # Merge alias list with usage data
+  SORTED_LIST=$(awk -F'\t' 'NR==FNR {count[$1]=$2; lastused[$1]=$3; next}
+    {
+      alias=$0
+      # Default count=0 and lastused=0 if not seen before
+      c=(alias in count)?count[alias]:0
+      l=(alias in lastused)?lastused[alias]:0
+      print c, l, alias
+    }' "$USAGE_FILE" "$ALIAS_FILE" |
+    sort -k2,2nr -k1,1nr | cut -d' ' -f3-)
+fi
+
+# Interactive selection
+SELECTED_LINE=$(echo "$SORTED_LIST" | fzf --prompt="Select instance: ")
+
+# Update usage file
+if [[ -n "$SELECTED_LINE" ]]; then
+  alias="$SELECTED_LINE"
+  now=$(date +%s)
+
+  awk -F'\t' -v a="$alias" -v t="$now" '
+    BEGIN {found=0}
+    $1 == a {print $1 "\t" $2+1 "\t" t; found=1; next}
+    {print}
+    END {if (!found) print a "\t1\t" t}
+  ' "$USAGE_FILE" > "$USAGE_FILE.tmp"
+
+  mv "$USAGE_FILE.tmp" "$USAGE_FILE"
+fi
 
 if [[ -z "$SELECTED_LINE" ]]; then
   echo "[⚠️] No instance selected."
