@@ -30,3 +30,7 @@
 ### Added
 - Usage tracking for instance selection in ssm-connect script and sort by usage in interactive mode
 
+## [1.4.0] - 2025-08-13
+### Added
+- command to check for updates
+
