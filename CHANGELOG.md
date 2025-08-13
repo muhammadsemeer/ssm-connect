@@ -34,3 +34,7 @@
 ### Added
 - command to check for updates
 
+## [1.4.1] - 2025-08-13
+### Fixed
+- Showing duplicate update info in --check-update
+
