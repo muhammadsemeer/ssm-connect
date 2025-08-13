@@ -114,6 +114,7 @@ Usage:
   ssm-connect --list-aliases -l      List all aliases
   ssm-connect --scp <alias> <source> <destination>
                                    Copy files using SCP (alias, source, destination)
+  ssm-connect --check-update         Check for updates
   ssm-connect --update               Update to latest version
   ssm-connect --help         -h      Show this help
   ssm-connect --version
@@ -308,6 +309,12 @@ case "${1:-}" in
     # read from changelog show new features
     VERSION=$(cat "$VERSION_FILE")
     print_changelog "$VERSION"
+    exit 0
+    ;;
+  --check-update)
+    # run update check and show update info
+    check_for_update
+    show_update_info
     exit 0
     ;;
   --update)
