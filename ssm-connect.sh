@@ -269,8 +269,8 @@ case "${1:-}" in
         --document-name "AWS-RunShellScript" \
         --comment "ssm-connect scp upload" \
         --parameters "commands=[
-          \"sudo -u ubuntu bash -c 'cd ~ && aws s3 cp $TMP_S3 $DESTINATION'\",
-          \"sudo -u ubuntu bash -c 'aws s3 rm $TMP_S3'\"
+          \"sudo -u ubuntu bash -c 'cd ~ && aws s3 --profile=ssm scp $TMP_S3 $DESTINATION'\",
+          \"sudo -u ubuntu bash -c 'aws s3 --profile=ssm rm $TMP_S3'\"
         ]" \
         --query "Command.CommandId" --output text)
 
@@ -287,7 +287,7 @@ case "${1:-}" in
         --document-name "AWS-RunShellScript" \
         --comment "ssm-connect scp download" \
         --parameters "commands=[
-          \"sudo -u ubuntu bash -c 'cd ~ && aws s3 cp $SOURCE $TMP_S3'\"
+          \"sudo -u ubuntu bash -c 'cd ~ && aws s3 --profile=ssm cp $SOURCE $TMP_S3'\"
         ]" \
         --query "Command.CommandId" --output text)
 
