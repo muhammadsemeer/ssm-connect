@@ -38,3 +38,7 @@
 ### Fixed
 - Showing duplicate update info in --check-update
 
+## [1.5.0] - 2025-09-23
+### Added
+- add AWS CLI profile option for S3 commands in ssm-connect script
+
