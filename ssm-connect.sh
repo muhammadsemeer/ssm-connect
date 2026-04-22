@@ -112,8 +112,10 @@ Usage:
   ssm-connect --add-alias -a a id    Add or update alias (alias, instance-id)
   ssm-connect --remove-alias -r a    Remove an alias
   ssm-connect --list-aliases -l      List all aliases
-  ssm-connect --scp <alias> <source> <destination>
-                                   Copy files using SCP (alias, source, destination)
+  ssm-connect --scp <source> <destination>
+                                   Copy files via SSM/S3. Use alias:path for remote.
+                                   Upload: ssm-connect --scp local.txt alias:/remote/path
+                                   Download: ssm-connect --scp alias:/remote/file.txt local/
   ssm-connect --check-update         Check for updates
   ssm-connect --update               Update to latest version
   ssm-connect --help         -h      Show this help
@@ -239,14 +241,31 @@ case "${1:-}" in
     fi
     ;;
   --scp)
-    if [[ $# -ne 4 ]]; then
-      echo "[ERROR] Usage: ssm-connect --scp <alias> <source> <destination>"
+    if [[ $# -ne 3 ]]; then
+      echo "[ERROR] Usage: ssm-connect --scp <source> <destination>"
+      echo "         Use alias:path for remote, e.g.:"
+      echo "           Upload:   ssm-connect --scp local.txt myserver:/home/ubuntu/"
+      echo "           Download: ssm-connect --scp myserver:/home/ubuntu/file.txt ./"
       exit 1
     fi
 
-    SCP_ALIAS="$2"
-    SOURCE="$3"
-    DESTINATION="$4"
+    SOURCE="$2"
+    DESTINATION="$3"
+
+    if [[ "$SOURCE" == *:* ]]; then
+      SCP_ALIAS="${SOURCE%%:*}"
+      REMOTE_PATH="${SOURCE#*:}"
+      LOCAL_PATH="$DESTINATION"
+      DIRECTION="download"
+    elif [[ "$DESTINATION" == *:* ]]; then
+      SCP_ALIAS="${DESTINATION%%:*}"
+      REMOTE_PATH="${DESTINATION#*:}"
+      LOCAL_PATH="$SOURCE"
+      DIRECTION="upload"
+    else
+      echo "[ERROR] One of source or destination must be a remote path in alias:path format."
+      exit 1
+    fi
 
     INSTANCE_ID=$(get_instance_id "$SCP_ALIAS")
     if [[ -z "$INSTANCE_ID" ]]; then
@@ -257,9 +276,18 @@ case "${1:-}" in
     TMP_NAME="ssm-tmp-$(date +%s)-$RANDOM"
     TMP_S3="s3://$S3_BUCKET/$TMP_NAME"
 
-    if [[ -f "$SOURCE" ]]; then
+    if [[ "$DIRECTION" == "upload" ]]; then
+      if [[ ! -f "$LOCAL_PATH" ]]; then
+        echo "[ERROR] Local file '$LOCAL_PATH' not found."
+        exit 1
+      fi
+
+      if [[ "$REMOTE_PATH" == */ ]]; then
+        REMOTE_PATH="${REMOTE_PATH}$(basename "$LOCAL_PATH")"
+      fi
+
       echo "[📤] Uploading local file to S3..."
-      aws s3 cp "$SOURCE" "$TMP_S3" --region "$AWS_REGION" --profile "$AWS_PROFILE"
+      aws s3 cp "$LOCAL_PATH" "$TMP_S3" --region "$AWS_REGION" --profile "$AWS_PROFILE"
 
       echo "[📦] Triggering SSM command to copy from S3 to instance..."
       COMMAND_ID=$(aws ssm send-command \
@@ -268,17 +296,17 @@ case "${1:-}" in
         --instance-ids "$INSTANCE_ID" \
         --document-name "AWS-RunShellScript" \
         --comment "ssm-connect scp upload" \
-        --parameters "commands=[
-          \"sudo -u ubuntu bash -c 'cd ~ && aws s3 --profile=ssm scp $TMP_S3 $DESTINATION'\",
-          \"sudo -u ubuntu bash -c 'aws s3 --profile=ssm rm $TMP_S3'\"
-        ]" \
+        --parameters "commands=[\"sudo -u ubuntu aws s3 cp $TMP_S3 $REMOTE_PATH --profile=ssm\",\"sudo -u ubuntu aws s3 rm $TMP_S3 --profile=ssm\"]" \
         --query "Command.CommandId" --output text)
 
       check_ssm_command "$COMMAND_ID"
-
       echo "[✅] Upload complete."
 
     else
+      if [[ -d "$LOCAL_PATH" ]] || [[ "$LOCAL_PATH" == */ ]]; then
+        LOCAL_PATH="${LOCAL_PATH%/}/$(basename "$REMOTE_PATH")"
+      fi
+
       echo "[📦] Triggering SSM command to upload from instance to S3..."
       COMMAND_ID=$(aws ssm send-command \
         --region "$AWS_REGION" \
@@ -286,15 +314,13 @@ case "${1:-}" in
         --instance-ids "$INSTANCE_ID" \
         --document-name "AWS-RunShellScript" \
         --comment "ssm-connect scp download" \
-        --parameters "commands=[
-          \"sudo -u ubuntu bash -c 'cd ~ && aws s3 --profile=ssm cp $SOURCE $TMP_S3'\"
-        ]" \
+        --parameters "commands=[\"sudo -u ubuntu aws s3 cp $REMOTE_PATH $TMP_S3 --profile=ssm\"]" \
         --query "Command.CommandId" --output text)
 
       check_ssm_command "$COMMAND_ID"
 
       echo "[📥] Downloading file from S3..."
-      aws s3 cp "$TMP_S3" "$DESTINATION" --region "$AWS_REGION" --profile "$AWS_PROFILE"
+      aws s3 cp "$TMP_S3" "$LOCAL_PATH" --region "$AWS_REGION" --profile "$AWS_PROFILE"
 
       echo "[🧹] Cleaning up S3..."
       aws s3 rm "$TMP_S3" --region "$AWS_REGION" --profile "$AWS_PROFILE"

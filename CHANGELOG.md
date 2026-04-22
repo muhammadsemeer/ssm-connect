@@ -42,3 +42,10 @@
 ### Added
 - add AWS CLI profile option for S3 commands in ssm-connect script
 
+## [1.6.0] - 2026-04-22
+### Changed
+- Same usage like original scp
+
+### Fixed
+- Scp Upload issues
+
