@@ -49,3 +49,7 @@
 ### Fixed
 - Scp Upload issues
 
+## [2.0.0] - 2026-04-24
+### Changed
+- AWS profile management to SSO
+
