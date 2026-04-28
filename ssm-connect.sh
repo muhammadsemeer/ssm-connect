@@ -150,6 +150,37 @@ get_instance_id() {
   grep "^$ALIAS_NAME " "$ALIAS_FILE" | awk '{print $2}' || echo ""
 }
 
+ensure_sso_login() {
+  AWS_CRED_FILE="$HOME/.aws/credentials"
+  AWS_CONFIG_FILE="$HOME/.aws/config"
+
+  if aws configure list-profiles 2>/dev/null | grep -q "^$AWS_PROFILE$"; then
+    if [[ -z "$(aws configure get sso_start_url --profile "$AWS_PROFILE" 2>/dev/null)" ]] \
+       && [[ -z "$(aws configure get sso_session --profile "$AWS_PROFILE" 2>/dev/null)" ]]; then
+      echo "[🧹] Detected legacy (non-SSO) profile '$AWS_PROFILE'. Removing..."
+
+      if [[ -f "$AWS_CRED_FILE" ]] && grep -q "^\[$AWS_PROFILE\]" "$AWS_CRED_FILE"; then
+        sed -i.bak "/^\[$AWS_PROFILE\]/,/^\[/{/^\[$AWS_PROFILE\]/d;/^\[/!d;}" "$AWS_CRED_FILE"
+      fi
+      if [[ -f "$AWS_CONFIG_FILE" ]] && grep -q "^\[profile $AWS_PROFILE\]" "$AWS_CONFIG_FILE"; then
+        sed -i.bak "/^\[profile $AWS_PROFILE\]/,/^\[/{/^\[profile $AWS_PROFILE\]/d;/^\[/!d;}" "$AWS_CONFIG_FILE"
+      fi
+      rm -f "$AWS_CRED_FILE.bak" "$AWS_CONFIG_FILE.bak" 2>/dev/null || true
+    fi
+  fi
+
+  if ! aws configure list-profiles 2>/dev/null | grep -q "^$AWS_PROFILE$"; then
+    echo "[INFO] AWS profile '$AWS_PROFILE' not found. Starting SSO setup..."
+    echo "[⚠️ ] When prompted for a role, choose: ssm-access-<your-name>"
+    aws configure sso --profile "$AWS_PROFILE"
+  fi
+
+  if ! aws sts get-caller-identity --profile "$AWS_PROFILE" --region "$AWS_REGION" >/dev/null 2>&1; then
+    echo "[🔐] SSO session expired or not signed in. Launching 'aws sso login'..."
+    aws sso login --profile "$AWS_PROFILE"
+  fi
+}
+
 case "${1:-}" in
   --help|-h)
     show_help
@@ -273,6 +304,8 @@ case "${1:-}" in
       exit 1
     fi
 
+    ensure_sso_login
+
     TMP_NAME="ssm-tmp-$(date +%s)-$RANDOM"
     TMP_S3="s3://$S3_BUCKET/$TMP_NAME"
 
@@ -373,34 +406,7 @@ case "${1:-}" in
 esac
 
 # === AWS SSO Profile Config ===
-AWS_CRED_FILE="$HOME/.aws/credentials"
-AWS_CONFIG_FILE="$HOME/.aws/config"
-
-if aws configure list-profiles 2>/dev/null | grep -q "^$AWS_PROFILE$"; then
-  if [[ -z "$(aws configure get sso_start_url --profile "$AWS_PROFILE" 2>/dev/null)" ]] \
-     && [[ -z "$(aws configure get sso_session --profile "$AWS_PROFILE" 2>/dev/null)" ]]; then
-    echo "[🧹] Detected legacy (non-SSO) profile '$AWS_PROFILE'. Removing..."
-
-    if [[ -f "$AWS_CRED_FILE" ]] && grep -q "^\[$AWS_PROFILE\]" "$AWS_CRED_FILE"; then
-      sed -i.bak "/^\[$AWS_PROFILE\]/,/^\[/{/^\[$AWS_PROFILE\]/d;/^\[/!d;}" "$AWS_CRED_FILE"
-    fi
-    if [[ -f "$AWS_CONFIG_FILE" ]] && grep -q "^\[profile $AWS_PROFILE\]" "$AWS_CONFIG_FILE"; then
-      sed -i.bak "/^\[profile $AWS_PROFILE\]/,/^\[/{/^\[profile $AWS_PROFILE\]/d;/^\[/!d;}" "$AWS_CONFIG_FILE"
-    fi
-    rm -f "$AWS_CRED_FILE.bak" "$AWS_CONFIG_FILE.bak" 2>/dev/null || true
-  fi
-fi
-
-if ! aws configure list-profiles 2>/dev/null | grep -q "^$AWS_PROFILE$"; then
-  echo "[INFO] AWS profile '$AWS_PROFILE' not found. Starting SSO setup..."
-  echo "[⚠️ ] When prompted for a role, choose: ssm-access-<your-name>"
-  aws configure sso --profile "$AWS_PROFILE"
-fi
-
-if ! aws sts get-caller-identity --profile "$AWS_PROFILE" --region "$AWS_REGION" >/dev/null 2>&1; then
-  echo "[🔐] SSO session expired or not signed in. Launching 'aws sso login'..."
-  aws sso login --profile "$AWS_PROFILE"
-fi
+ensure_sso_login
 
 # === Direct connect ===
 if [[ $# -eq 1 ]]; then
