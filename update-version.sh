@@ -106,18 +106,28 @@ if ! $DRY_RUN; then
     git add "$CHANGELOG_FILE"
   fi
 
-  # === Git commit & push ===
+  # === Git commit, tag & push ===
   cd "$GIT_REPO_PATH"
   git add version
   git commit -m "chore: bump version to $NEW_VERSION"
 
+  TAG_NAME="v$NEW_VERSION"
+  if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+    echo "[⚠️] Tag $TAG_NAME already exists. Skipping tag creation."
+  else
+    git tag -a "$TAG_NAME" -m "Release $TAG_NAME"
+    echo "[🏷️] Created git tag: $TAG_NAME"
+  fi
+
   read -rp "[🔄] Do you want to push the changes to GitHub? (y/n): " push_choice
   if [[ "$push_choice" == "y" ]]; then
     git push origin master
-    echo "[🚀] Version pushed to GitHub."
+    git push origin "$TAG_NAME"
+    echo "[🚀] Version and tag $TAG_NAME pushed to GitHub."
   else
     echo "[ℹ️] Skipping push to GitHub."
   fi
 else
   echo "[🧪] Dry-run complete. No files were changed."
+  echo "[🏷️] Would create git tag: v$NEW_VERSION"
 fi
