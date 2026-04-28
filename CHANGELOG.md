@@ -53,3 +53,7 @@
 ### Changed
 - AWS profile management to SSO
 
+## [2.0.1] - 2026-04-28
+### Fixed
+- Auto-trigger SSO login for `--scp` when session is expired or missing
+
