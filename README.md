@@ -67,10 +67,11 @@ ssm-connect addons
 Map short names to EC2 instance IDs so you never have to type them:
 
 ```bash
-# add / update
+# add / update (group is optional)
 ssm-connect -a webserver i-67849xxxx
+ssm-connect -a api-1 i-67849xxxx api
 
-# list
+# list — sectioned by group
 ssm-connect -l
 
 # remove
@@ -81,9 +82,25 @@ Aliases are stored in `~/.ssm-connect/aliases`.
 
 ---
 
+## Alias groups
+
+Group related instances under a shared name (e.g. `api`, `tiles`, `workers`) so you can pick from the group without remembering individual aliases.
+
+```bash
+# attach an existing alias to a group (no need to re-enter the instance id)
+ssm-connect --set-group api-1 api
+
+# clear an alias's group
+ssm-connect --unset-group api-1
+```
+
+The group is stored as an optional third column in `~/.ssm-connect/aliases`. Aliases without a group still work exactly as before and show up under `ungrouped` in `--list-aliases`.
+
+---
+
 ## Connect to an instance
 
-**Interactive selector** (fuzzy search, sorted by recent usage):
+**Interactive selector** (fuzzy search, sorted by group then recent usage):
 ```bash
 ssm-connect
 ```
@@ -91,6 +108,13 @@ ssm-connect
 **Direct connect by alias:**
 ```bash
 ssm-connect addons
+```
+
+**Pick from a group** — if the argument matches a group name (and isn't an alias), an fzf picker opens scoped to that group:
+```bash
+ssm-connect api
+# api › api-1   i-aaaaaaa
+#       api-2   i-bbbbbbb
 ```
 
 ---

@@ -57,3 +57,15 @@
 ### Fixed
 - Auto-trigger SSO login for `--scp` when session is expired or missing
 
+## [2.1.0] - 2026-05-06
+### Added
+- Alias groups: optional third column in the aliases file lets you tag aliases with a group name (e.g. `api`, `tiles`)
+- `ssm-connect --add-alias` accepts an optional group: `ssm-connect -a <alias> <id> [group]`
+- `ssm-connect --set-group <alias> <group>` and `ssm-connect --unset-group <alias>` to manage the group of an existing alias without re-entering the instance id
+- `ssm-connect <group>` opens an fzf picker scoped to instances in that group when the argument isn't an alias
+
+### Changed
+- `--list-aliases` now renders sectioned by group, with bold-cyan group headers and a dim `ungrouped` section for aliases without a group
+- Interactive picker shows a `GROUP` column (when any alias has a group), pinned aligned header, and sorts by group then recent usage
+- Usage tracking is now keyed by alias name instead of the full alias-file line (existing usage data will rebuild from the next few interactive picks)
+

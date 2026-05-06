@@ -4,8 +4,6 @@ set -euo pipefail
 # === Config ===
 GIT_REPO_PATH="$(dirname "$0")"
 GIT_VERSION_FILE="$GIT_REPO_PATH/version"
-CHANGELOG_FILE="$GIT_REPO_PATH/CHANGELOG.md"
-VALID_CATEGORIES=("Added" "Changed" "Fixed" "Removed")
 
 usage() {
   echo "Usage: $0 [patch|minor|major] [--dry-run]"
@@ -50,84 +48,35 @@ esac
 NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
 
 echo "[🚧] Bumping version: $CURRENT_VERSION → $NEW_VERSION"
-$DRY_RUN && echo "[🔍] Dry-run mode is ON. No files will be written."
 
-# === Changelog collection with fzf ===
-TODAY_DATE=$(date +%F)
-echo
-echo "[📝] Add changelog entries for version $NEW_VERSION using fzf."
-echo "Enter one entry at a time. Leave message blank to finish."
-echo
-
-declare -A SECTIONS
-
-while true; do
-  CATEGORY=$(printf "%s\n" "${VALID_CATEGORIES[@]}" | fzf --prompt="Select category: " --height=10 --reverse) || break
-  read -rp "Message for $CATEGORY (leave blank to finish): " MESSAGE
-  [[ -z "$MESSAGE" ]] && break
-  SECTIONS["$CATEGORY"]+="- $MESSAGE"$'\n'
-done
-
-# === Show preview of changelog ===
-if (( ${#SECTIONS[@]} )); then
-  echo
-  echo "[🧾] Preview of new changelog section:"
-  echo "## [$NEW_VERSION] - $TODAY_DATE"
-  for CATEGORY in "${VALID_CATEGORIES[@]}"; do
-    if [[ -n "${SECTIONS[$CATEGORY]:-}" ]]; then
-      echo "### $CATEGORY"
-      echo "${SECTIONS[$CATEGORY]}"
-    fi
-  done
-  echo
-else
-  echo "[⚠️] No changelog entries provided. Skipping changelog update."
+if $DRY_RUN; then
+  echo "[🔍] Dry-run mode is ON. No files will be written."
+  echo "[🧪] Would bump version file to $NEW_VERSION and create tag v$NEW_VERSION"
+  exit 0
 fi
 
-# === File updates (if not dry-run) ===
-if ! $DRY_RUN; then
-  echo "$NEW_VERSION" > "$GIT_VERSION_FILE"
-  echo "[✅] Updated version file."
+# === File updates ===
+echo "$NEW_VERSION" > "$GIT_VERSION_FILE"
+echo "[✅] Updated version file."
 
-  if (( ${#SECTIONS[@]} )); then
-    TEMP_CHANGELOG=$(mktemp)
-    {
-      cat "$CHANGELOG_FILE"
-      echo "## [$NEW_VERSION] - $TODAY_DATE"
-      for CATEGORY in "${VALID_CATEGORIES[@]}"; do
-        if [[ -n "${SECTIONS[$CATEGORY]:-}" ]]; then
-          echo "### $CATEGORY"
-          echo "${SECTIONS[$CATEGORY]}"
-        fi
-      done
-    } > "$TEMP_CHANGELOG"
-    mv "$TEMP_CHANGELOG" "$CHANGELOG_FILE"
-    echo "[✅] CHANGELOG.md updated."
-    git add "$CHANGELOG_FILE"
-  fi
+# === Git commit, tag & push ===
+cd "$GIT_REPO_PATH"
+git add version
+git commit -m "chore: bump version to $NEW_VERSION"
 
-  # === Git commit, tag & push ===
-  cd "$GIT_REPO_PATH"
-  git add version
-  git commit -m "chore: bump version to $NEW_VERSION"
-
-  TAG_NAME="v$NEW_VERSION"
-  if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
-    echo "[⚠️] Tag $TAG_NAME already exists. Skipping tag creation."
-  else
-    git tag -a "$TAG_NAME" -m "Release $TAG_NAME"
-    echo "[🏷️] Created git tag: $TAG_NAME"
-  fi
-
-  read -rp "[🔄] Do you want to push the changes to GitHub? (y/n): " push_choice
-  if [[ "$push_choice" == "y" ]]; then
-    git push origin master
-    git push origin "$TAG_NAME"
-    echo "[🚀] Version and tag $TAG_NAME pushed to GitHub."
-  else
-    echo "[ℹ️] Skipping push to GitHub."
-  fi
+TAG_NAME="v$NEW_VERSION"
+if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+  echo "[⚠️] Tag $TAG_NAME already exists. Skipping tag creation."
 else
-  echo "[🧪] Dry-run complete. No files were changed."
-  echo "[🏷️] Would create git tag: v$NEW_VERSION"
+  git tag -a "$TAG_NAME" -m "Release $TAG_NAME"
+  echo "[🏷️] Created git tag: $TAG_NAME"
+fi
+
+read -rp "[🔄] Do you want to push the changes to GitHub? (y/n): " push_choice
+if [[ "$push_choice" == "y" ]]; then
+  git push origin master
+  git push origin "$TAG_NAME"
+  echo "[🚀] Version and tag $TAG_NAME pushed to GitHub."
+else
+  echo "[ℹ️] Skipping push to GitHub."
 fi
