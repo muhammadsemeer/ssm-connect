@@ -22,6 +22,16 @@ chmod 600 "$ALIAS_FILE"
 UPDATE_INFO_FILE="${TMPDIR:-/tmp}/ssm-connect-update-info"
 LAST_CHECK_FILE="${TMPDIR:-/tmp}/ssm-connect-last-check"
 
+# === ANSI colors (only when stdout is a TTY) ===
+if [[ -t 1 ]]; then
+  C_GRP=$'\033[36m'    # cyan — group name
+  C_DIM=$'\033[90m'    # dim gray — ungrouped marker
+  C_HDR=$'\033[1m'     # bold — header row
+  C_RESET=$'\033[0m'
+else
+  C_GRP=""; C_DIM=""; C_HDR=""; C_RESET=""
+fi
+
 check_for_update() {
   local local_version latest_version
 
@@ -108,10 +118,16 @@ cat <<EOF
 Usage:
   ssm-connect                     Launch interactive instance selector
   ssm-connect <alias>             Connect directly to instance using alias
+  ssm-connect <group>             Pick from instances under a group
 
-  ssm-connect --add-alias -a a id    Add or update alias (alias, instance-id)
+  ssm-connect --add-alias -a a id [group]
+                                     Add or update alias (alias, instance-id, optional group)
   ssm-connect --remove-alias -r a    Remove an alias
-  ssm-connect --list-aliases -l      List all aliases
+  ssm-connect --list-aliases -l      List all aliases (sectioned by group)
+  ssm-connect --set-group <alias> <group>
+                                     Set or change the group of an existing alias
+  ssm-connect --unset-group <alias>
+                                     Remove the group from an existing alias
   ssm-connect --scp <source> <destination>
                                    Copy files via SSM/S3. Use alias:path for remote.
                                    Upload: ssm-connect --scp local.txt alias:/remote/path
@@ -148,6 +164,11 @@ print_changelog() {
 get_instance_id() {
   local ALIAS_NAME="$1"
   grep "^$ALIAS_NAME " "$ALIAS_FILE" | awk '{print $2}' || echo ""
+}
+
+list_group_aliases() {
+  local GROUP_NAME="$1"
+  awk -v grp="$GROUP_NAME" 'NF >= 3 && $3 == grp {print $1, $2, $3}' "$ALIAS_FILE"
 }
 
 ensure_sso_login() {
@@ -187,16 +208,22 @@ case "${1:-}" in
     exit 0
     ;;
   --add-alias|-a)
-    if [[ $# -ne 3 ]]; then
-      echo "[ERROR] Usage: ssm-connect -a <alias> <instance-id>"
+    if [[ $# -lt 3 || $# -gt 4 ]]; then
+      echo "[ERROR] Usage: ssm-connect -a <alias> <instance-id> [group]"
       exit 1
     fi
     NEW_ALIAS="$2"
     NEW_ID="$3"
+    NEW_GROUP="${4:-}"
 
     sed -i.bak "/^$NEW_ALIAS /d" "$ALIAS_FILE"
-    echo "$NEW_ALIAS $NEW_ID" >> "$ALIAS_FILE"
-    echo "[✅] Alias '$NEW_ALIAS' → '$NEW_ID' added."
+    if [[ -n "$NEW_GROUP" ]]; then
+      echo "$NEW_ALIAS $NEW_ID $NEW_GROUP" >> "$ALIAS_FILE"
+      echo "[✅] Alias '$NEW_ALIAS' → '$NEW_ID' (group: $NEW_GROUP) added."
+    else
+      echo "$NEW_ALIAS $NEW_ID" >> "$ALIAS_FILE"
+      echo "[✅] Alias '$NEW_ALIAS' → '$NEW_ID' added."
+    fi
     exit 0
     ;;
   --remove-alias|-r)
@@ -213,13 +240,62 @@ case "${1:-}" in
     fi
     exit 0
     ;;
+  --set-group)
+    if [[ $# -ne 3 ]]; then
+      echo "[ERROR] Usage: ssm-connect --set-group <alias> <group>"
+      exit 1
+    fi
+    TARGET_ALIAS="$2"
+    TARGET_GROUP="$3"
+    EXISTING_ID=$(get_instance_id "$TARGET_ALIAS")
+    if [[ -z "$EXISTING_ID" ]]; then
+      echo "[ERROR] Alias '$TARGET_ALIAS' not found."
+      exit 1
+    fi
+    sed -i.bak "/^$TARGET_ALIAS /d" "$ALIAS_FILE"
+    echo "$TARGET_ALIAS $EXISTING_ID $TARGET_GROUP" >> "$ALIAS_FILE"
+    echo "[✅] Alias '$TARGET_ALIAS' added to group '$TARGET_GROUP'."
+    exit 0
+    ;;
+  --unset-group)
+    if [[ $# -ne 2 ]]; then
+      echo "[ERROR] Usage: ssm-connect --unset-group <alias>"
+      exit 1
+    fi
+    TARGET_ALIAS="$2"
+    EXISTING_ID=$(get_instance_id "$TARGET_ALIAS")
+    if [[ -z "$EXISTING_ID" ]]; then
+      echo "[ERROR] Alias '$TARGET_ALIAS' not found."
+      exit 1
+    fi
+    sed -i.bak "/^$TARGET_ALIAS /d" "$ALIAS_FILE"
+    echo "$TARGET_ALIAS $EXISTING_ID" >> "$ALIAS_FILE"
+    echo "[✅] Alias '$TARGET_ALIAS' group cleared."
+    exit 0
+    ;;
   --list-aliases|-l)
     if [[ ! -s "$ALIAS_FILE" ]]; then
       echo "[📭] No aliases found."
       exit 0
     fi
     echo "[📋] Current aliases:"
-    column -t "$ALIAS_FILE"
+    awk '
+      NF >= 3 { print $3 "\t" $1 "\t" $2; next }
+      { print "~\t" $1 "\t" $2 }
+    ' "$ALIAS_FILE" |
+      sort -t $'\t' -k1,1 -k2,2 |
+      awk -F'\t' \
+        -v c_grp="$C_GRP" -v c_hdr="$C_HDR" -v c_dim="$C_DIM" -v c_reset="$C_RESET" '
+        {
+          if ($1 != prev) {
+            if (NR > 1) print ""
+            if ($1 == "~") print c_dim "ungrouped" c_reset
+            else print c_hdr c_grp $1 c_reset
+            prev = $1
+          }
+          printf "  %s\t%s\n", $2, $3
+        }
+      ' | column -t -s $'\t'
     exit 0
     ;;
   --version)
@@ -414,8 +490,32 @@ if [[ $# -eq 1 ]]; then
   INSTANCE_ID=$(get_instance_id "$ALIAS_NAME")
 
   if [[ -z "$INSTANCE_ID" ]]; then
-    echo "[ERROR] Alias '$ALIAS_NAME' not found in $ALIAS_FILE"
-    exit 1
+    # Fallback: maybe the arg is a group name
+    GROUP_LIST=$(list_group_aliases "$ALIAS_NAME")
+
+    if [[ -z "$GROUP_LIST" ]]; then
+      echo "[ERROR] No alias or group named '$ALIAS_NAME' found in $ALIAS_FILE"
+      exit 1
+    fi
+
+    GROUP_NAME="$ALIAS_NAME"
+    COUNT=$(echo "$GROUP_LIST" | wc -l | tr -d ' ')
+    echo "[🔍] Group '$GROUP_NAME' — $COUNT instance(s):"
+
+    DISPLAY_LIST=$({
+      printf "ALIAS\tINSTANCE\n"
+      echo "$GROUP_LIST" | awk '{ printf "%s\t%s\n", $1, $2 }' | sort
+    } | column -t -s $'\t')
+
+    SELECTED_LINE=$(echo "$DISPLAY_LIST" | fzf --ansi --header-lines=1 --color=header:bold --prompt="$GROUP_NAME › ")
+
+    if [[ -z "$SELECTED_LINE" ]]; then
+      echo "[⚠️] No instance selected."
+      exit 0
+    fi
+
+    ALIAS_NAME=$(echo "$SELECTED_LINE" | awk '{print $1}')
+    INSTANCE_ID=$(get_instance_id "$ALIAS_NAME")
   fi
 
   echo "[🔌] Connecting to '$ALIAS_NAME' ($INSTANCE_ID)..."
@@ -434,39 +534,40 @@ touch "$USAGE_FILE"
 
 echo "[🔍] Selecting instance interactively..."
 
-if [[ ! -s "$USAGE_FILE" ]]; then
-  # If usage file is empty, sort aliases alphabetically
-  SORTED_LIST=$(sort "$ALIAS_FILE")
+# Show group column only when at least one alias has a group
+HAS_GROUPS=$(awk 'NF >= 3 {print 1; exit}' "$ALIAS_FILE")
+
+# Merge usage data (keyed by alias name) and sort by group then recency
+SORTED_ROWS=$(awk -F'\t' '
+  NR==FNR { count[$1] = $2 + 0; lastused[$1] = $3 + 0; next }
+  {
+    n = split($0, f, /[ \t]+/)
+    a = f[1]; id = f[2]; grp = (n >= 3) ? f[3] : ""
+    c = (a in count) ? count[a] : 0
+    l = (a in lastused) ? lastused[a] : 0
+    sort_grp = (grp == "") ? "~" : grp   # ungrouped sorts last
+    print sort_grp "\t" l "\t" c "\t" a "\t" id "\t" grp
+  }
+' "$USAGE_FILE" "$ALIAS_FILE" | sort -t $'\t' -k1,1 -k2,2nr -k3,3nr)
+
+if [[ "$HAS_GROUPS" == "1" ]]; then
+  DISPLAY_LIST=$({
+    printf "ALIAS\tINSTANCE\tGROUP\n"
+    echo "$SORTED_ROWS" | awk -F'\t' \
+      -v c_grp="$C_GRP" -v c_dim="$C_DIM" -v c_reset="$C_RESET" '
+      {
+        grp = ($6 == "") ? (c_dim "—" c_reset) : (c_grp $6 c_reset)
+        printf "%s\t%s\t%s\n", $4, $5, grp
+      }'
+  } | column -t -s $'\t')
 else
-  # Merge alias list with usage data
-  SORTED_LIST=$(awk -F'\t' 'NR==FNR {count[$1]=$2; lastused[$1]=$3; next}
-    {
-      alias=$0
-      # Default count=0 and lastused=0 if not seen before
-      c=(alias in count)?count[alias]:0
-      l=(alias in lastused)?lastused[alias]:0
-      print c, l, alias
-    }' "$USAGE_FILE" "$ALIAS_FILE" |
-    sort -k2,2nr -k1,1nr | cut -d' ' -f3-)
+  DISPLAY_LIST=$({
+    printf "ALIAS\tINSTANCE\n"
+    echo "$SORTED_ROWS" | awk -F'\t' '{ printf "%s\t%s\n", $4, $5 }'
+  } | column -t -s $'\t')
 fi
 
-# Interactive selection
-SELECTED_LINE=$(echo "$SORTED_LIST" | fzf --prompt="Select instance: ")
-
-# Update usage file
-if [[ -n "$SELECTED_LINE" ]]; then
-  alias="$SELECTED_LINE"
-  now=$(date +%s)
-
-  awk -F'\t' -v a="$alias" -v t="$now" '
-    BEGIN {found=0}
-    $1 == a {print $1 "\t" $2+1 "\t" t; found=1; next}
-    {print}
-    END {if (!found) print a "\t1\t" t}
-  ' "$USAGE_FILE" > "$USAGE_FILE.tmp"
-
-  mv "$USAGE_FILE.tmp" "$USAGE_FILE"
-fi
+SELECTED_LINE=$(echo "$DISPLAY_LIST" | fzf --ansi --header-lines=1 --color=header:bold --prompt="Select instance: ")
 
 if [[ -z "$SELECTED_LINE" ]]; then
   echo "[⚠️] No instance selected."
@@ -475,6 +576,16 @@ fi
 
 ALIAS_NAME=$(echo "$SELECTED_LINE" | awk '{print $1}')
 INSTANCE_ID=$(get_instance_id "$ALIAS_NAME")
+
+# Update usage file (keyed by alias name)
+now=$(date +%s)
+awk -F'\t' -v a="$ALIAS_NAME" -v t="$now" '
+  BEGIN { found=0 }
+  $1 == a { print $1 "\t" $2+1 "\t" t; found=1; next }
+  { print }
+  END { if (!found) print a "\t1\t" t }
+' "$USAGE_FILE" > "$USAGE_FILE.tmp"
+mv "$USAGE_FILE.tmp" "$USAGE_FILE"
 
 echo "[🔌] Connecting to '$ALIAS_NAME' ($INSTANCE_ID)..."
 aws ssm start-session \
