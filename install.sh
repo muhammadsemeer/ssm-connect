@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/refs/heads/master/ssm-connect.sh"
 REMOTE_VERSION_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/version"
+COMPLETION_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/completions/ssm-connect.bash"
 
 echo "[🔧] Installing ssm-connect..."
 
@@ -179,6 +180,35 @@ echo "[⬇️] Installing ssm-connect CLI to $SCRIPT_PATH"
 sudo mkdir -p "$(dirname "$SCRIPT_PATH")"
 sudo curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH"
 sudo chmod +x "$SCRIPT_PATH"
+
+# === Install bash completion ===
+echo "[⌨️ ] Installing bash completion..."
+COMPLETION_DIR=""
+if $IS_MAC; then
+  if command -v brew &>/dev/null; then
+    COMPLETION_DIR="$(brew --prefix)/etc/bash_completion.d"
+  fi
+elif $IS_ARCH; then
+  COMPLETION_DIR="/usr/share/bash-completion/completions"
+elif $IS_LINUX; then
+  if [[ -d /etc/bash_completion.d ]]; then
+    COMPLETION_DIR="/etc/bash_completion.d"
+  elif [[ -d /usr/share/bash-completion/completions ]]; then
+    COMPLETION_DIR="/usr/share/bash-completion/completions"
+  fi
+fi
+
+if [[ -n "$COMPLETION_DIR" ]]; then
+  mkdir -p "$COMPLETION_DIR"
+  if curl -fsSL "$COMPLETION_URL" -o "$COMPLETION_DIR/ssm-connect" 2>/dev/null; then
+    echo "[✅] Bash completion installed to $COMPLETION_DIR/ssm-connect"
+    echo "[ℹ️] Restart your shell or run: source $COMPLETION_DIR/ssm-connect"
+  else
+    echo "[ℹ️] Skipped bash completion (download failed)."
+  fi
+else
+  echo "[ℹ️] Could not detect a bash-completion directory; skipping completion install."
+fi
 
 # === Setup alias and version config ===
 echo "[📁] Setting up config directory at $ALIAS_DIR"

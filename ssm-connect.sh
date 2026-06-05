@@ -9,6 +9,7 @@ VERSION_FILE="$CONFIG_DIR/version"
 REMOTE_VERSION_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/version"
 SCRIPT_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/ssm-connect.sh"
 REMOTE_CHANGELOG_FILE="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/CHANGELOG.md"
+COMPLETION_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/completions/ssm-connect.bash"
 SCRIPT_PATH="/usr/local/bin/ssm-connect"
 CHANGELOG_PATH="$CONFIG_DIR/CHANGELOG.md"
 S3_BUCKET="ssm-scp"
@@ -112,6 +113,44 @@ check_ssm_command() {
   done
 }
 
+
+install_completion() {
+  # Detect the appropriate bash-completion directory for this platform.
+  local completion_dir=""
+  case "$(uname -s)" in
+    Darwin)
+      if command -v brew &>/dev/null; then
+        completion_dir="$(brew --prefix)/etc/bash_completion.d"
+      fi
+      ;;
+    Linux)
+      if [[ -d /etc/bash_completion.d ]]; then
+        completion_dir="/etc/bash_completion.d"
+      elif [[ -d /usr/share/bash-completion/completions ]]; then
+        completion_dir="/usr/share/bash-completion/completions"
+      fi
+      ;;
+  esac
+
+  if [[ -z "$completion_dir" ]]; then
+    echo "[ℹ️] Could not detect a bash-completion directory; skipping completion install."
+    return 0
+  fi
+
+  # Writing to system completion dirs needs root on Linux; Homebrew dirs don't.
+  local sudo_cmd=""
+  if [[ ! -w "$completion_dir" ]]; then
+    sudo_cmd="sudo"
+  fi
+
+  $sudo_cmd mkdir -p "$completion_dir" 2>/dev/null || true
+  if $sudo_cmd curl -fsSL "$COMPLETION_URL" -o "$completion_dir/ssm-connect" 2>/dev/null; then
+    echo "[✅] Bash completion installed to $completion_dir/ssm-connect"
+    echo "[ℹ️] Restart your shell or run: source $completion_dir/ssm-connect"
+  else
+    echo "[ℹ️] Skipped bash completion (download failed)."
+  fi
+}
 
 show_help() {
 cat <<EOF
@@ -466,6 +505,7 @@ case "${1:-}" in
       sudo chmod +x "$SCRIPT_PATH"
       curl -fsSL "$REMOTE_VERSION_URL" -o "$VERSION_FILE"
       curl -fsSL "$REMOTE_CHANGELOG_FILE" -o "$CHANGELOG_PATH"
+      install_completion
       echo "[✅] ssm-connect updated successfully!"
       # read from changelog show new features
       VERSION=$(cat "$VERSION_FILE")
