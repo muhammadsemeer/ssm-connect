@@ -69,3 +69,9 @@
 - Interactive picker shows a `GROUP` column (when any alias has a group), pinned aligned header, and sorts by group then recent usage
 - Usage tracking is now keyed by alias name instead of the full alias-file line (existing usage data will rebuild from the next few interactive picks)
 
+## [2.2.0] - 2026-06-05
+### Added
+- Bash completion: completes flags, alias names, group names, and `alias:` targets for `--scp`, driven by `~/.ssm-connect/aliases`
+- `install.sh` installs the completion script to the platform's bash-completion directory
+- `ssm-connect --update` now installs/refreshes bash completion for existing users
+
