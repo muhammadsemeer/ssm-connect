@@ -87,3 +87,16 @@
 ### Fixed
 - A failed network call during the daily update check no longer counts as that day's check, so the next run retries
 
+## [2.4.0] - 2026-06-09
+### Fixed
+- Aliases containing regex/glob metacharacters (e.g. a `.` or `/`) no longer match or delete the wrong entry — all alias lookups now use exact matching
+- `--whats-new` and `--update` now work on macOS (replaced a GNU-only `head` invocation that fails on BSD)
+- Interactive picker no longer drops the first alias on the very first run (before any usage history exists)
+- Alias edits no longer leave `.bak` files behind in `~/.ssm-connect`
+
+### Changed
+- Hardened `--scp`: remote paths are validated and safely quoted before being run on the instance, preventing command injection
+- Alias and group names containing whitespace (which would corrupt the alias file) are now rejected with a clear error; instance IDs that don't look like `i-xxxxxxxx` produce a warning
+- `--uninstall` now also removes the installed bash-completion file
+- All scripts restructured into functions behind a single dispatch entry point; `--help`/`--version`/alias management no longer require `fzf` to be installed
+
