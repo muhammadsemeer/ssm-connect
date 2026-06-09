@@ -75,3 +75,15 @@
 - `install.sh` installs the completion script to the platform's bash-completion directory
 - `ssm-connect --update` now installs/refreshes bash completion for existing users
 
+## [2.3.0] - 2026-06-09
+### Added
+- `ssm-connect --install-bash-completion` installs or refreshes bash completion on demand
+
+### Changed
+- Update checks now use proper semantic-version comparison, so they're correct across multi-digit versions (e.g. `2.10.0` is newer than `2.9.0`) and tolerant of stray whitespace or a leading `v`
+- `--update` verifies the remote version itself and downloads to temporary files first, swapping them into place only after every download succeeds — a failed update can no longer leave a half-written install
+- `--check-update` now reports when the update server is unreachable instead of silently treating it as up to date
+
+### Fixed
+- A failed network call during the daily update check no longer counts as that day's check, so the next run retries
+

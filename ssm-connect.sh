@@ -33,25 +33,73 @@ else
   C_GRP=""; C_DIM=""; C_HDR=""; C_RESET=""
 fi
 
-check_for_update() {
-  local local_version latest_version
+# Strip surrounding whitespace/newlines and a leading 'v' from a version string.
+_normalize_version() {
+  local v="$1"
+  v="${v//[$'\t\r\n ']/}"
+  echo "${v#v}"
+}
 
+# Compare two versions. Echoes 1 if $1 > $2, -1 if $1 < $2, 0 if equal.
+_version_cmp() {
+  local a b
+  a=$(_normalize_version "$1")
+  b=$(_normalize_version "$2")
+  [[ "$a" == "$b" ]] && { echo 0; return; }
+
+  local IFS=.
+  local -a av bv
+  av=($a); bv=($b)
+
+  local i max=${#av[@]} x y
+  (( ${#bv[@]} > max )) && max=${#bv[@]}
+  for ((i = 0; i < max; i++)); do
+    x=${av[i]:-0}; x=${x//[^0-9]/}; x=${x:-0}
+    y=${bv[i]:-0}; y=${y//[^0-9]/}; y=${y:-0}
+    (( 10#$x > 10#$y )) && { echo 1; return; }
+    (( 10#$x < 10#$y )) && { echo -1; return; }
+  done
+  echo 0
+}
+
+# Current installed version (normalized), or 0.0.0 if unknown.
+_read_local_version() {
   if [[ -f "$VERSION_FILE" ]]; then
-    local_version=$(cat "$VERSION_FILE")
+    _normalize_version "$(cat "$VERSION_FILE")"
   else
-    local_version="0.0.0"
+    echo "0.0.0"
   fi
+}
 
-  latest_version=$(curl -fsSL "$REMOTE_VERSION_URL" 2>/dev/null || echo "$local_version")
+# Print the remote version on success (exit 0); print nothing and exit 1 on
+# any network/server failure or empty response.
+_fetch_remote_version() {
+  local remote
+  remote=$(curl -fsSL "$REMOTE_VERSION_URL" 2>/dev/null) || return 1
+  remote=$(_normalize_version "$remote")
+  [[ -n "$remote" ]] || return 1
+  echo "$remote"
+}
 
-  if [[ "$latest_version" != "$local_version" ]]; then
+# Refresh the update banner file. Returns:
+#   0 = update available (banner written)
+#   1 = up to date (banner emptied)
+#   2 = could not reach server (banner left untouched, no nagging)
+check_for_update() {
+  local local_version remote_version
+  local_version=$(_read_local_version)
+  remote_version=$(_fetch_remote_version) || return 2
+
+  if [[ "$(_version_cmp "$remote_version" "$local_version")" == "1" ]]; then
     {
-      echo "[⬆️] New version available: $latest_version (current: $local_version)"
+      echo "[⬆️] New version available: $remote_version (current: $local_version)"
       echo "[ℹ️] Run: ssm-connect --update to upgrade."
     } > "$UPDATE_INFO_FILE"
-  else
-    : > "$UPDATE_INFO_FILE"  # Empty the file if no update
+    return 0
   fi
+
+  : > "$UPDATE_INFO_FILE"  # up to date — clear any stale banner
+  return 1
 }
 
 show_update_info() {
@@ -61,15 +109,19 @@ show_update_info() {
 }
 
 # === Run version check only once per day ===
-LAST_CHECK_FILE="${TMPDIR:-/tmp}/ssm-connect-last-check"
-
 run_daily_update_check() {
-  local today
+  local today rc=0
   today=$(date +%Y-%m-%d)
 
-  # If the file doesn't exist or is from a different day, run the check
-  if [[ ! -f "$LAST_CHECK_FILE" ]] || [[ $(cat "$LAST_CHECK_FILE") != "$today" ]]; then
-    check_for_update
+  # Skip if we already checked today.
+  if [[ -f "$LAST_CHECK_FILE" && "$(cat "$LAST_CHECK_FILE")" == "$today" ]]; then
+    return 0
+  fi
+
+  check_for_update || rc=$?
+  # Only record the check if we actually reached the server (rc 0 or 1);
+  # a transient network failure (rc 2) should be retried on the next run.
+  if [[ $rc -ne 2 ]]; then
     echo "$today" > "$LAST_CHECK_FILE"
   fi
 }
@@ -152,6 +204,38 @@ install_completion() {
   fi
 }
 
+# Download the new release to temp files and only swap them into place once
+# every download has succeeded, so a mid-update failure can't leave a
+# half-written binary or a version file that disagrees with the script.
+do_update() {
+  local new_version="$1"
+  local tmp_script tmp_version tmp_changelog
+  tmp_script=$(mktemp "${TMPDIR:-/tmp}/ssm-connect.XXXXXX")
+  tmp_version=$(mktemp "${TMPDIR:-/tmp}/ssm-version.XXXXXX")
+  tmp_changelog=$(mktemp "${TMPDIR:-/tmp}/ssm-changelog.XXXXXX")
+  trap 'rm -f "$tmp_script" "$tmp_version" "$tmp_changelog"' RETURN
+
+  if ! curl -fsSL "$SCRIPT_URL"            -o "$tmp_script"    \
+    || ! curl -fsSL "$REMOTE_VERSION_URL"   -o "$tmp_version"   \
+    || ! curl -fsSL "$REMOTE_CHANGELOG_FILE" -o "$tmp_changelog"; then
+    echo "[❌] Download failed; no changes were made."
+    return 1
+  fi
+
+  if [[ ! -s "$tmp_script" ]]; then
+    echo "[❌] Downloaded script is empty; aborting."
+    return 1
+  fi
+
+  # Swap into place. The CLI lives in a root-owned dir; the config files don't.
+  sudo install -m 0755 "$tmp_script" "$SCRIPT_PATH"
+  install -m 0644 "$tmp_version" "$VERSION_FILE"
+  install -m 0644 "$tmp_changelog" "$CHANGELOG_PATH"
+
+  install_completion
+  echo "[✅] ssm-connect updated to version $new_version!"
+}
+
 show_help() {
 cat <<EOF
 Usage:
@@ -173,6 +257,8 @@ Usage:
                                    Download: ssm-connect --scp alias:/remote/file.txt local/
   ssm-connect --check-update         Check for updates
   ssm-connect --update               Update to latest version
+  ssm-connect --install-bash-completion
+                                     Install bash completion for ssm-connect
   ssm-connect --help         -h      Show this help
   ssm-connect --version
   ssm-connect --uninstall            Uninstall ssm-connect
@@ -188,7 +274,7 @@ print_changelog() {
     return 1
   fi
 
-  echo "[ℹ️] What's new in version $VERSION:"
+  echo "[ℹ️] What's new in version $version:"
   local block
   block=$(sed -n "/^## \[$version\]/,/^## \[/p" "$CHANGELOG_PATH")
 
@@ -486,32 +572,43 @@ case "${1:-}" in
     exit 0
     ;;
   --check-update)
-    # run update check and show update info
-    check_for_update
-    show_update_info
+    # Force a fresh, synchronous check and report the outcome clearly.
+    rc=0
+    check_for_update || rc=$?
+    case $rc in
+      0) show_update_info ;;
+      1) echo "[✅] ssm-connect is up to date (version $(_read_local_version))." ;;
+      2) echo "[⚠️] Could not check for updates (network or server unreachable)." ;;
+    esac
+    exit 0
+    ;;
+  --install-bash-completion)
+    install_completion
     exit 0
     ;;
   --update)
-      # dont run update remote version and local version is same check update info file
-      # if update info file is empty version is same
-      if [[ -f "$UPDATE_INFO_FILE" ]] && [[ ! -s "$UPDATE_INFO_FILE" ]]; then
-          echo "ssm-connect is already up to date. version $(cat "$VERSION_FILE")"
-          exit 0
+      # Do our own version check rather than trusting the background flag, so
+      # --update is correct even on a fresh shell where the flag doesn't exist.
+      local_version=$(_read_local_version)
+      rc=0
+      remote_version=$(_fetch_remote_version) || rc=$?
+      if [[ $rc -ne 0 ]]; then
+        echo "[⚠️] Could not reach the update server. Please try again later."
+        exit 1
       fi
 
+      if [[ "$(_version_cmp "$remote_version" "$local_version")" != "1" ]]; then
+        echo "[✅] ssm-connect is already up to date (version $local_version)."
+        : > "$UPDATE_INFO_FILE"
+        exit 0
+      fi
 
-      echo "[⬇️] Updating ssm-connect..."
-      sudo curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH"
-      sudo chmod +x "$SCRIPT_PATH"
-      curl -fsSL "$REMOTE_VERSION_URL" -o "$VERSION_FILE"
-      curl -fsSL "$REMOTE_CHANGELOG_FILE" -o "$CHANGELOG_PATH"
-      install_completion
-      echo "[✅] ssm-connect updated successfully!"
-      # read from changelog show new features
-      VERSION=$(cat "$VERSION_FILE")
-      # delete content of update info file
+      echo "[⬇️] Updating ssm-connect $local_version → $remote_version..."
+      if ! do_update "$remote_version"; then
+        exit 1
+      fi
       : > "$UPDATE_INFO_FILE"
-      print_changelog "$VERSION"
+      print_changelog "$remote_version"
       exit 0
       ;;
   --*|-*)
