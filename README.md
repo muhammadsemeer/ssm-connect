@@ -178,6 +178,26 @@ The script also runs a background version check once per day and shows an update
 
 ---
 
+## Shell completion
+
+`ssm-connect` ships a **bash** completion script (completes flags, alias names, group names, and `alias:` targets for `--scp`). The installer sets it up automatically; you can also (re)install it later:
+
+```bash
+ssm-connect --install-bash-completion
+```
+
+**Linux** — works out of the box.
+
+**macOS** — completion runs in **bash** (macOS defaults to zsh, which this does not cover) and requires the `bash-completion@2` package. Both `install.sh` and `ssm-connect --install-bash-completion`/`--update` install that package automatically via Homebrew. The one manual step is making sure your `~/.bash_profile` sources it:
+
+```bash
+echo '[[ -r "$(brew --prefix)/etc/profile.d/bash_completion.sh" ]] && . "$(brew --prefix)/etc/profile.d/bash_completion.sh"' >> ~/.bash_profile
+```
+
+Then open a new bash session.
+
+---
+
 ## Uninstall
 
 ```bash

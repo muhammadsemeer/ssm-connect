@@ -100,3 +100,11 @@
 - `--uninstall` now also removes the installed bash-completion file
 - All scripts restructured into functions behind a single dispatch entry point; `--help`/`--version`/alias management no longer require `fzf` to be installed
 
+## [2.4.1] - 2026-06-09
+### Fixed
+- Bash completion now works on macOS: the `bash-completion@2` package (which loads completions there) is installed automatically by `install.sh`, `--install-bash-completion`, and `--update`, and the completion file is written to its lazy-load directory (`$(brew --prefix)/share/bash-completion/completions`) instead of the legacy compat path
+- `--install-bash-completion`/`--update` no longer abort silently on macOS when Homebrew is absent (a non-zero return from completion-dir detection tripped `set -e`)
+
+### Note
+- macOS defaults to zsh; completion applies to bash sessions and needs `~/.bash_profile` to source `bash-completion@2` (the installer prints the exact line)
+

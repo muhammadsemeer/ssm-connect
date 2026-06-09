@@ -174,7 +174,10 @@ run_daily_update_check() {
 detect_completion_dir() {
   case "$(uname -s)" in
     Darwin)
-      command -v brew &>/dev/null && printf '%s\n' "$(brew --prefix)/etc/bash_completion.d"
+      # bash-completion@2 lazy-loads command-named files from here. (macOS
+      # defaults to zsh; this only applies to bash sessions.)
+      command -v brew &>/dev/null \
+        && printf '%s\n' "$(brew --prefix)/share/bash-completion/completions"
       ;;
     Linux)
       if [[ -d /etc/bash_completion.d ]]; then
@@ -184,6 +187,29 @@ detect_completion_dir() {
       fi
       ;;
   esac
+  return 0  # empty output means "not found"; never fail (would trip set -e in $(...))
+}
+
+# macOS needs the bash-completion@2 package to load ANY completion (its loader
+# is what reads our file). Install it if missing so existing users who just
+# `--update` get working completion without a manual step.
+ensure_macos_completion_deps() {
+  [[ "$(uname -s)" == "Darwin" ]] || return 0
+  command -v brew &>/dev/null || return 0
+  brew list --formula "bash-completion@2" &>/dev/null && return 0
+  say "[📦] Installing bash-completion@2 (required for completion on macOS)..."
+  if brew install --quiet "bash-completion@2" >/dev/null 2>&1; then
+    say "[✅] Installed bash-completion@2."
+  else
+    warn "Could not install bash-completion@2 automatically. Run: brew install bash-completion@2"
+  fi
+}
+
+# Remaining manual step on macOS: brew doesn't wire the loader into your shell.
+completion_macos_hint() {
+  [[ "$(uname -s)" == "Darwin" ]] || return 0
+  say "[ℹ️] macOS: completion runs in bash (not the default zsh). Ensure ~/.bash_profile sources bash-completion:"
+  say '       [[ -r "$(brew --prefix)/etc/profile.d/bash_completion.sh" ]] && . "$(brew --prefix)/etc/profile.d/bash_completion.sh"'
 }
 
 install_completion() {
@@ -194,14 +220,23 @@ install_completion() {
     return 0
   fi
 
-  # Writing to system completion dirs needs root on Linux; Homebrew dirs don't.
-  local sudo_cmd=""
-  [[ -w "$completion_dir" ]] || sudo_cmd="sudo"
+  ensure_macos_completion_deps
 
-  $sudo_cmd mkdir -p "$completion_dir" 2>/dev/null || true
+  # Homebrew dirs are user-owned; Linux system dirs need root. Try without sudo
+  # first so we don't create a root-owned dir inside the user's Homebrew tree.
+  local sudo_cmd=""
+  if ! mkdir -p "$completion_dir" 2>/dev/null; then
+    sudo_cmd="sudo"
+    $sudo_cmd mkdir -p "$completion_dir" 2>/dev/null || true
+  fi
+  if [[ -z "$sudo_cmd" && ! -w "$completion_dir" ]]; then
+    sudo_cmd="sudo"
+  fi
+
   if $sudo_cmd curl -fsSL "$COMPLETION_URL" -o "$completion_dir/ssm-connect" 2>/dev/null; then
     say "[✅] Bash completion installed to $completion_dir/ssm-connect"
     say "[ℹ️] Restart your shell or run: source $completion_dir/ssm-connect"
+    completion_macos_hint
   else
     say "[ℹ️] Skipped bash completion (download failed)."
   fi

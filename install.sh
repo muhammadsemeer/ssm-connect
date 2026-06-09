@@ -96,7 +96,7 @@ if $IS_LINUX; then
 elif $IS_MAC; then
   say "[📦] Checking required packages on macOS..."
   command -v brew &>/dev/null || die "Homebrew not found. Please install it from https://brew.sh/"
-  install_if_missing_brew curl jq fzf unzip
+  install_if_missing_brew curl jq fzf unzip bash-completion@2
 fi
 
 # === Install AWS CLI ===
@@ -162,7 +162,8 @@ sudo chmod +x "$SCRIPT_PATH"
 say "[⌨️ ] Installing bash completion..."
 COMPLETION_DIR=""
 if $IS_MAC; then
-  command -v brew &>/dev/null && COMPLETION_DIR="$(brew --prefix)/etc/bash_completion.d"
+  # bash-completion@2 lazy-loads command-named files from here.
+  command -v brew &>/dev/null && COMPLETION_DIR="$(brew --prefix)/share/bash-completion/completions"
 elif $IS_ARCH; then
   COMPLETION_DIR="/usr/share/bash-completion/completions"
 elif $IS_LINUX; then
@@ -178,6 +179,10 @@ if [[ -n "$COMPLETION_DIR" ]]; then
   if curl -fsSL "$COMPLETION_URL" -o "$COMPLETION_DIR/ssm-connect" 2>/dev/null; then
     say "[✅] Bash completion installed to $COMPLETION_DIR/ssm-connect"
     say "[ℹ️] Restart your shell or run: source $COMPLETION_DIR/ssm-connect"
+    if $IS_MAC; then
+      say "[ℹ️] macOS: completion runs in bash (not the default zsh). Add to ~/.bash_profile:"
+      say '       [[ -r "$(brew --prefix)/etc/profile.d/bash_completion.sh" ]] && . "$(brew --prefix)/etc/profile.d/bash_completion.sh"'
+    fi
   else
     say "[ℹ️] Skipped bash completion (download failed)."
   fi
