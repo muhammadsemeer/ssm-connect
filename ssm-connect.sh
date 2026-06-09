@@ -251,7 +251,11 @@ do_update() {
   tmp_script=$(mktemp "${TMPDIR:-/tmp}/ssm-connect.XXXXXX")
   tmp_version=$(mktemp "${TMPDIR:-/tmp}/ssm-version.XXXXXX")
   tmp_changelog=$(mktemp "${TMPDIR:-/tmp}/ssm-changelog.XXXXXX")
-  trap 'rm -f "$tmp_script" "$tmp_version" "$tmp_changelog"' RETURN
+  # Clean up temp files when do_update returns, then self-clear: a RETURN trap
+  # is global without functrace, so without `trap - RETURN` it would re-fire on
+  # the caller's return and hit these now-out-of-scope locals under set -u. The
+  # :- guards are extra insurance.
+  trap 'rm -f "${tmp_script:-}" "${tmp_version:-}" "${tmp_changelog:-}"; trap - RETURN' RETURN
 
   if ! curl -fsSL "$SCRIPT_URL"           -o "$tmp_script"    \
     || ! curl -fsSL "$REMOTE_VERSION_URL"   -o "$tmp_version"   \
@@ -579,6 +583,10 @@ cmd_update() {
   do_update "$remote_version" || exit 1
   : > "$UPDATE_INFO_FILE"
   print_changelog "$remote_version"
+  # do_update just replaced this script file on disk. Exit from memory now so
+  # bash never returns to the top level and re-reads the (now longer) file,
+  # which would execute misaligned trailing bytes.
+  exit 0
 }
 
 cmd_uninstall() {

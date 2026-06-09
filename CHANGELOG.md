@@ -108,3 +108,7 @@
 ### Note
 - macOS defaults to zsh; completion applies to bash sessions and needs `~/.bash_profile` to source `bash-completion@2` (the installer prints the exact line)
 
+## [2.4.2] - 2026-06-09
+### Fixed
+- `--update` no longer ends with a spurious `tmp_script: unbound variable` error. The updater's temp-file cleanup used a `RETURN` trap, which (being global without functrace) re-fired on the caller's return where those locals are out of scope, tripping `set -u`. The trap now self-clears, and `--update` exits immediately after replacing the on-disk script so bash can't re-read the just-overwritten (longer) file. The update itself always succeeded; only the trailing error was new.
+
