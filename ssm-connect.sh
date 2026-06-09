@@ -1,37 +1,83 @@
-#!/bin/bash
+#!/usr/bin/env bash
+#
+# ssm-connect — connect to EC2 instances over AWS SSM, with aliases, groups,
+# file transfer (SCP-over-S3), and self-update.
+#
+# This script is distributed and self-updated as a SINGLE file (see --update).
+# Keep it self-contained: do not split it into sourced libraries, or the
+# install/update mechanism breaks.
+
 set -euo pipefail
 
-AWS_PROFILE="ssm-session-manager"
-AWS_REGION="ap-south-1"
-CONFIG_DIR="$HOME/.ssm-connect"
-ALIAS_FILE="$CONFIG_DIR/aliases"
-VERSION_FILE="$CONFIG_DIR/version"
-REMOTE_VERSION_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/version"
-SCRIPT_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/ssm-connect.sh"
-REMOTE_CHANGELOG_FILE="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/CHANGELOG.md"
-COMPLETION_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/completions/ssm-connect.bash"
-SCRIPT_PATH="/usr/local/bin/ssm-connect"
-CHANGELOG_PATH="$CONFIG_DIR/CHANGELOG.md"
-S3_BUCKET="ssm-scp"
-USAGE_FILE="$HOME/.cache/ssm-connect/usage"
+# ============================================================================
+# Configuration
+# ============================================================================
+readonly AWS_PROFILE="ssm-session-manager"
+readonly AWS_REGION="ap-south-1"
+# Common flags appended to every aws invocation.
+readonly AWS_ARGS=(--region "$AWS_REGION" --profile "$AWS_PROFILE")
 
-# === Ensure config dir and version ===
-mkdir -p "$CONFIG_DIR"
-touch "$ALIAS_FILE"
-chmod 600 "$ALIAS_FILE"
+readonly CONFIG_DIR="$HOME/.ssm-connect"
+readonly ALIAS_FILE="$CONFIG_DIR/aliases"
+readonly VERSION_FILE="$CONFIG_DIR/version"
+readonly CHANGELOG_PATH="$CONFIG_DIR/CHANGELOG.md"
+readonly USAGE_FILE="$HOME/.cache/ssm-connect/usage"
+readonly SCRIPT_PATH="/usr/local/bin/ssm-connect"
+readonly S3_BUCKET="ssm-scp"
 
-UPDATE_INFO_FILE="${TMPDIR:-/tmp}/ssm-connect-update-info"
-LAST_CHECK_FILE="${TMPDIR:-/tmp}/ssm-connect-last-check"
+readonly AWS_CRED_FILE="$HOME/.aws/credentials"
+readonly AWS_CONFIG_FILE="$HOME/.aws/config"
 
-# === ANSI colors (only when stdout is a TTY) ===
-if [[ -t 1 ]]; then
-  C_GRP=$'\033[36m'    # cyan — group name
-  C_DIM=$'\033[90m'    # dim gray — ungrouped marker
-  C_HDR=$'\033[1m'     # bold — header row
-  C_RESET=$'\033[0m'
-else
-  C_GRP=""; C_DIM=""; C_HDR=""; C_RESET=""
-fi
+readonly REPO_RAW="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master"
+readonly REMOTE_VERSION_URL="$REPO_RAW/version"
+readonly SCRIPT_URL="$REPO_RAW/ssm-connect.sh"
+readonly REMOTE_CHANGELOG_URL="$REPO_RAW/CHANGELOG.md"
+readonly COMPLETION_URL="$REPO_RAW/completions/ssm-connect.bash"
+
+readonly UPDATE_INFO_FILE="${TMPDIR:-/tmp}/ssm-connect-update-info"
+readonly LAST_CHECK_FILE="${TMPDIR:-/tmp}/ssm-connect-last-check"
+
+# Colours, populated by setup_colors() once we know whether stdout is a TTY.
+C_GRP=""; C_DIM=""; C_HDR=""; C_RESET=""
+
+# ============================================================================
+# Output helpers
+# ============================================================================
+say()  { printf '%s\n' "$*"; }
+warn() { printf '[⚠️] %s\n' "$*" >&2; }
+die()  { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
+
+setup_colors() {
+  if [[ -t 1 ]]; then
+    C_GRP=$'\033[36m'    # cyan — group name
+    C_DIM=$'\033[90m'    # gray — ungrouped marker
+    C_HDR=$'\033[1m'     # bold — header row
+    C_RESET=$'\033[0m'
+  fi
+}
+
+# ============================================================================
+# Runtime setup
+# ============================================================================
+init_runtime() {
+  mkdir -p "$CONFIG_DIR"
+  touch "$ALIAS_FILE"
+  chmod 600 "$ALIAS_FILE"
+  setup_colors
+}
+
+# require_tools cmd... — abort if any named command is missing.
+require_tools() {
+  local cmd missing=()
+  for cmd in "$@"; do
+    command -v "$cmd" &>/dev/null || missing+=("$cmd")
+  done
+  (( ${#missing[@]} == 0 )) || die "Missing required tool(s): ${missing[*]}"
+}
+
+# ============================================================================
+# Versioning & self-update
+# ============================================================================
 
 # Strip surrounding whitespace/newlines and a leading 'v' from a version string.
 _normalize_version() {
@@ -103,17 +149,15 @@ check_for_update() {
 }
 
 show_update_info() {
-  if [[ -s "$UPDATE_INFO_FILE" ]]; then
-    cat "$UPDATE_INFO_FILE"
-  fi
+  [[ -s "$UPDATE_INFO_FILE" ]] && cat "$UPDATE_INFO_FILE"
+  return 0
 }
 
-# === Run version check only once per day ===
+# Run the update check at most once per calendar day (in the background).
 run_daily_update_check() {
   local today rc=0
   today=$(date +%Y-%m-%d)
 
-  # Skip if we already checked today.
   if [[ -f "$LAST_CHECK_FILE" && "$(cat "$LAST_CHECK_FILE")" == "$today" ]]; then
     return 0
   fi
@@ -126,81 +170,40 @@ run_daily_update_check() {
   fi
 }
 
-run_daily_update_check >> /dev/null 2>&1 &
-
-show_update_info
-
-# === Check required tools ===
-for cmd in aws fzf; do
-  if ! command -v "$cmd" &>/dev/null; then
-    echo "[ERROR] Missing required tool: $cmd"
-    exit 1
-  fi
-done
-
-check_ssm_command() {
-  local COMMAND_ID="$1"
-  echo "[⏳] Waiting for SSM command ($COMMAND_ID) to complete..."
-
-  while true; do
-    STATUS=$(aws ssm list-command-invocations \
-      --region "$AWS_REGION" \
-      --profile "$AWS_PROFILE" \
-      --command-id "$COMMAND_ID" \
-      --details \
-      --query "CommandInvocations[0].Status" \
-      --output text)
-
-    if [[ "$STATUS" == "Success" ]]; then
-      break
-    elif [[ "$STATUS" == "Failed" || "$STATUS" == "Cancelled" || "$STATUS" == "TimedOut" ]]; then
-      echo "[❌] SSM command failed with status: $STATUS"
-      echo "[ℹ️] Ensure the instance has AWS CLI installed in the home directory of the user 'ubuntu'"
-      echo "[ℹ️] No need to configure AWS CLI on the instance, it will use the IAM role attached to the instance."
-      echo "[ℹ️] If you encounter issues, please check the instance's IAM role permissions. It should have permissions to access S3 $S3_BUCKET bucket."
-      exit 1
-    fi
-
-    sleep 2
-  done
-}
-
-
-install_completion() {
-  # Detect the appropriate bash-completion directory for this platform.
-  local completion_dir=""
+# Detect the platform's bash-completion directory, or print nothing.
+detect_completion_dir() {
   case "$(uname -s)" in
     Darwin)
-      if command -v brew &>/dev/null; then
-        completion_dir="$(brew --prefix)/etc/bash_completion.d"
-      fi
+      command -v brew &>/dev/null && printf '%s\n' "$(brew --prefix)/etc/bash_completion.d"
       ;;
     Linux)
       if [[ -d /etc/bash_completion.d ]]; then
-        completion_dir="/etc/bash_completion.d"
+        printf '%s\n' /etc/bash_completion.d
       elif [[ -d /usr/share/bash-completion/completions ]]; then
-        completion_dir="/usr/share/bash-completion/completions"
+        printf '%s\n' /usr/share/bash-completion/completions
       fi
       ;;
   esac
+}
 
+install_completion() {
+  local completion_dir
+  completion_dir=$(detect_completion_dir)
   if [[ -z "$completion_dir" ]]; then
-    echo "[ℹ️] Could not detect a bash-completion directory; skipping completion install."
+    say "[ℹ️] Could not detect a bash-completion directory; skipping completion install."
     return 0
   fi
 
   # Writing to system completion dirs needs root on Linux; Homebrew dirs don't.
   local sudo_cmd=""
-  if [[ ! -w "$completion_dir" ]]; then
-    sudo_cmd="sudo"
-  fi
+  [[ -w "$completion_dir" ]] || sudo_cmd="sudo"
 
   $sudo_cmd mkdir -p "$completion_dir" 2>/dev/null || true
   if $sudo_cmd curl -fsSL "$COMPLETION_URL" -o "$completion_dir/ssm-connect" 2>/dev/null; then
-    echo "[✅] Bash completion installed to $completion_dir/ssm-connect"
-    echo "[ℹ️] Restart your shell or run: source $completion_dir/ssm-connect"
+    say "[✅] Bash completion installed to $completion_dir/ssm-connect"
+    say "[ℹ️] Restart your shell or run: source $completion_dir/ssm-connect"
   else
-    echo "[ℹ️] Skipped bash completion (download failed)."
+    say "[ℹ️] Skipped bash completion (download failed)."
   fi
 }
 
@@ -215,15 +218,15 @@ do_update() {
   tmp_changelog=$(mktemp "${TMPDIR:-/tmp}/ssm-changelog.XXXXXX")
   trap 'rm -f "$tmp_script" "$tmp_version" "$tmp_changelog"' RETURN
 
-  if ! curl -fsSL "$SCRIPT_URL"            -o "$tmp_script"    \
+  if ! curl -fsSL "$SCRIPT_URL"           -o "$tmp_script"    \
     || ! curl -fsSL "$REMOTE_VERSION_URL"   -o "$tmp_version"   \
-    || ! curl -fsSL "$REMOTE_CHANGELOG_FILE" -o "$tmp_changelog"; then
-    echo "[❌] Download failed; no changes were made."
+    || ! curl -fsSL "$REMOTE_CHANGELOG_URL" -o "$tmp_changelog"; then
+    warn "Download failed; no changes were made."
     return 1
   fi
 
   if [[ ! -s "$tmp_script" ]]; then
-    echo "[❌] Downloaded script is empty; aborting."
+    warn "Downloaded script is empty; aborting."
     return 1
   fi
 
@@ -233,77 +236,110 @@ do_update() {
   install -m 0644 "$tmp_changelog" "$CHANGELOG_PATH"
 
   install_completion
-  echo "[✅] ssm-connect updated to version $new_version!"
+  say "[✅] ssm-connect updated to version $new_version!"
 }
 
-show_help() {
-cat <<EOF
-Usage:
-  ssm-connect                     Launch interactive instance selector
-  ssm-connect <alias>             Connect directly to instance using alias
-  ssm-connect <group>             Pick from instances under a group
-
-  ssm-connect --add-alias -a a id [group]
-                                     Add or update alias (alias, instance-id, optional group)
-  ssm-connect --remove-alias -r a    Remove an alias
-  ssm-connect --list-aliases -l      List all aliases (sectioned by group)
-  ssm-connect --set-group <alias> <group>
-                                     Set or change the group of an existing alias
-  ssm-connect --unset-group <alias>
-                                     Remove the group from an existing alias
-  ssm-connect --scp <source> <destination>
-                                   Copy files via SSM/S3. Use alias:path for remote.
-                                   Upload: ssm-connect --scp local.txt alias:/remote/path
-                                   Download: ssm-connect --scp alias:/remote/file.txt local/
-  ssm-connect --check-update         Check for updates
-  ssm-connect --update               Update to latest version
-  ssm-connect --install-bash-completion
-                                     Install bash completion for ssm-connect
-  ssm-connect --help         -h      Show this help
-  ssm-connect --version
-  ssm-connect --uninstall            Uninstall ssm-connect
-  ssm-connect --whats-new            Show what's new in the latest version
-EOF
-}
-
+# Print the CHANGELOG section for a given version (macOS/BSD-safe — no GNU
+# `head -n -1`). Uses literal substring matching so version dots aren't regex.
 print_changelog() {
   local version="$1"
-
   if [[ ! -f "$CHANGELOG_PATH" ]]; then
-    echo "[ERROR] $CHANGELOG_PATH not found"
+    warn "$CHANGELOG_PATH not found"
     return 1
   fi
 
-  echo "[ℹ️] What's new in version $version:"
-  local block
-  block=$(sed -n "/^## \[$version\]/,/^## \[/p" "$CHANGELOG_PATH")
-
-  # Remove the last line if it’s another version header
-  if [[ $(tail -n 1 <<< "$block") =~ ^##\ \[ ]]; then
-    block=$(head -n -1 <<< "$block")
-  fi
-
-  echo "$block"
+  say "[ℹ️] What's new in version $version:"
+  awk -v header="## [$version]" '
+    index($0, header) == 1 { capture = 1; print; next }
+    capture && /^## \[/    { exit }
+    capture                { print }
+  ' "$CHANGELOG_PATH"
 }
 
+# ============================================================================
+# Alias storage
+#
+# The alias file is whitespace-delimited: "alias instance-id [group]". All
+# lookups/edits match the alias as an exact awk field, so alias names with
+# regex/glob metacharacters can't match or delete the wrong line (and we never
+# leave sed .bak litter behind).
+# ============================================================================
+
 get_instance_id() {
-  local ALIAS_NAME="$1"
-  grep "^$ALIAS_NAME " "$ALIAS_FILE" | awk '{print $2}' || echo ""
+  awk -v a="$1" '$1 == a { print $2; exit }' "$ALIAS_FILE"
+}
+
+alias_exists() {
+  awk -v a="$1" '$1 == a { found = 1 } END { exit found ? 0 : 1 }' "$ALIAS_FILE"
 }
 
 list_group_aliases() {
-  local GROUP_NAME="$1"
-  awk -v grp="$GROUP_NAME" 'NF >= 3 && $3 == grp {print $1, $2, $3}' "$ALIAS_FILE"
+  awk -v grp="$1" 'NF >= 3 && $3 == grp { print $1, $2, $3 }' "$ALIAS_FILE"
 }
 
-ensure_sso_login() {
-  AWS_CRED_FILE="$HOME/.aws/credentials"
-  AWS_CONFIG_FILE="$HOME/.aws/config"
+# Delete any line whose first field equals the given alias.
+remove_alias_line() {
+  local tmp
+  tmp=$(mktemp)
+  awk -v a="$1" '$1 != a' "$ALIAS_FILE" > "$tmp"
+  mv "$tmp" "$ALIAS_FILE"
+  chmod 600 "$ALIAS_FILE"
+}
 
+# Add or replace an alias entry: set_alias <alias> <id> [group]
+set_alias() {
+  local alias="$1" id="$2" grp="${3:-}"
+  remove_alias_line "$alias"
+  if [[ -n "$grp" ]]; then
+    printf '%s %s %s\n' "$alias" "$id" "$grp" >> "$ALIAS_FILE"
+  else
+    printf '%s %s\n' "$alias" "$id" >> "$ALIAS_FILE"
+  fi
+}
+
+# ============================================================================
+# Input validation
+# ============================================================================
+
+# Alias and group names must be a single whitespace-free token (the alias file
+# is whitespace-delimited) and may not look like a flag.
+validate_name() {
+  local name="$1" kind="$2"
+  [[ -n "$name" ]] || die "$kind name is empty."
+  case "$name" in
+    -*)            die "$kind name may not start with '-': '$name'" ;;
+    *[[:space:]]*) die "$kind name may not contain whitespace: '$name'" ;;
+  esac
+}
+
+# Soft check — warn on a value that doesn't look like an EC2 instance ID, but
+# don't block it (lets unusual targets through).
+validate_instance_id() {
+  [[ "$1" =~ ^i-[0-9a-fA-F]{6,}$ ]] \
+    || warn "'$1' doesn't look like an EC2 instance ID (expected i-xxxxxxxx)."
+}
+
+# Remote paths are interpolated into a shell command we run on the instance via
+# SSM RunShellScript. Restrict them to ordinary path characters so they can't
+# break out of the single-quoted argument or the JSON we send.
+validate_remote_path() {
+  local p="$1" leftover
+  [[ -n "$p" ]] || die "Remote path is empty."
+  # Strip the allowed characters; anything left over is disallowed. Done with
+  # tr (not ${p//[...]/}) because a '/' inside a substitution pattern would
+  # terminate the pattern early.
+  leftover=$(printf '%s' "$p" | tr -d 'A-Za-z0-9/._~+:= -')
+  [[ -z "$leftover" ]] || die "Remote path contains unsafe characters ('$leftover') in: $p"
+}
+
+# ============================================================================
+# AWS SSO / SSM
+# ============================================================================
+ensure_sso_login() {
   if aws configure list-profiles 2>/dev/null | grep -q "^$AWS_PROFILE$"; then
     if [[ -z "$(aws configure get sso_start_url --profile "$AWS_PROFILE" 2>/dev/null)" ]] \
        && [[ -z "$(aws configure get sso_session --profile "$AWS_PROFILE" 2>/dev/null)" ]]; then
-      echo "[🧹] Detected legacy (non-SSO) profile '$AWS_PROFILE'. Removing..."
+      say "[🧹] Detected legacy (non-SSO) profile '$AWS_PROFILE'. Removing..."
 
       if [[ -f "$AWS_CRED_FILE" ]] && grep -q "^\[$AWS_PROFILE\]" "$AWS_CRED_FILE"; then
         sed -i.bak "/^\[$AWS_PROFILE\]/,/^\[/{/^\[$AWS_PROFILE\]/d;/^\[/!d;}" "$AWS_CRED_FILE"
@@ -316,101 +352,138 @@ ensure_sso_login() {
   fi
 
   if ! aws configure list-profiles 2>/dev/null | grep -q "^$AWS_PROFILE$"; then
-    echo "[INFO] AWS profile '$AWS_PROFILE' not found. Starting SSO setup..."
-    echo "[⚠️ ] When prompted for a role, choose: ssm-access-<your-name>"
+    say "[INFO] AWS profile '$AWS_PROFILE' not found. Starting SSO setup..."
+    say "[⚠️ ] When prompted for a role, choose: ssm-access-<your-name>"
     aws configure sso --profile "$AWS_PROFILE"
   fi
 
-  if ! aws sts get-caller-identity --profile "$AWS_PROFILE" --region "$AWS_REGION" >/dev/null 2>&1; then
-    echo "[🔐] SSO session expired or not signed in. Launching 'aws sso login'..."
+  if ! aws sts get-caller-identity "${AWS_ARGS[@]}" >/dev/null 2>&1; then
+    say "[🔐] SSO session expired or not signed in. Launching 'aws sso login'..."
     aws sso login --profile "$AWS_PROFILE"
   fi
 }
 
-case "${1:-}" in
-  --help|-h)
-    show_help
-    exit 0
-    ;;
-  --add-alias|-a)
-    if [[ $# -lt 3 || $# -gt 4 ]]; then
-      echo "[ERROR] Usage: ssm-connect -a <alias> <instance-id> [group]"
-      exit 1
-    fi
-    NEW_ALIAS="$2"
-    NEW_ID="$3"
-    NEW_GROUP="${4:-}"
+# Block until an SSM command finishes; abort with guidance if it fails.
+wait_for_ssm_command() {
+  local command_id="$1" status
+  say "[⏳] Waiting for SSM command ($command_id) to complete..."
 
-    sed -i.bak "/^$NEW_ALIAS /d" "$ALIAS_FILE"
-    if [[ -n "$NEW_GROUP" ]]; then
-      echo "$NEW_ALIAS $NEW_ID $NEW_GROUP" >> "$ALIAS_FILE"
-      echo "[✅] Alias '$NEW_ALIAS' → '$NEW_ID' (group: $NEW_GROUP) added."
-    else
-      echo "$NEW_ALIAS $NEW_ID" >> "$ALIAS_FILE"
-      echo "[✅] Alias '$NEW_ALIAS' → '$NEW_ID' added."
-    fi
-    exit 0
-    ;;
-  --remove-alias|-r)
-    if [[ $# -ne 2 ]]; then
-      echo "[ERROR] Usage: ssm-connect -r <alias>"
-      exit 1
-    fi
-    TO_REMOVE="$2"
-    if grep -q "^$TO_REMOVE " "$ALIAS_FILE"; then
-      sed -i.bak "/^$TO_REMOVE /d" "$ALIAS_FILE"
-      echo "[🗑️] Alias '$TO_REMOVE' removed."
-    else
-      echo "[WARN] Alias '$TO_REMOVE' not found."
-    fi
-    exit 0
-    ;;
-  --set-group)
-    if [[ $# -ne 3 ]]; then
-      echo "[ERROR] Usage: ssm-connect --set-group <alias> <group>"
-      exit 1
-    fi
-    TARGET_ALIAS="$2"
-    TARGET_GROUP="$3"
-    EXISTING_ID=$(get_instance_id "$TARGET_ALIAS")
-    if [[ -z "$EXISTING_ID" ]]; then
-      echo "[ERROR] Alias '$TARGET_ALIAS' not found."
-      exit 1
-    fi
-    sed -i.bak "/^$TARGET_ALIAS /d" "$ALIAS_FILE"
-    echo "$TARGET_ALIAS $EXISTING_ID $TARGET_GROUP" >> "$ALIAS_FILE"
-    echo "[✅] Alias '$TARGET_ALIAS' added to group '$TARGET_GROUP'."
-    exit 0
-    ;;
-  --unset-group)
-    if [[ $# -ne 2 ]]; then
-      echo "[ERROR] Usage: ssm-connect --unset-group <alias>"
-      exit 1
-    fi
-    TARGET_ALIAS="$2"
-    EXISTING_ID=$(get_instance_id "$TARGET_ALIAS")
-    if [[ -z "$EXISTING_ID" ]]; then
-      echo "[ERROR] Alias '$TARGET_ALIAS' not found."
-      exit 1
-    fi
-    sed -i.bak "/^$TARGET_ALIAS /d" "$ALIAS_FILE"
-    echo "$TARGET_ALIAS $EXISTING_ID" >> "$ALIAS_FILE"
-    echo "[✅] Alias '$TARGET_ALIAS' group cleared."
-    exit 0
-    ;;
-  --list-aliases|-l)
-    if [[ ! -s "$ALIAS_FILE" ]]; then
-      echo "[📭] No aliases found."
-      exit 0
-    fi
-    echo "[📋] Current aliases:"
-    awk '
-      NF >= 3 { print $3 "\t" $1 "\t" $2; next }
-      { print "~\t" $1 "\t" $2 }
-    ' "$ALIAS_FILE" |
-      sort -t $'\t' -k1,1 -k2,2 |
-      awk -F'\t' \
-        -v c_grp="$C_GRP" -v c_hdr="$C_HDR" -v c_dim="$C_DIM" -v c_reset="$C_RESET" '
+  while true; do
+    status=$(aws ssm list-command-invocations "${AWS_ARGS[@]}" \
+      --command-id "$command_id" --details \
+      --query "CommandInvocations[0].Status" --output text)
+
+    case "$status" in
+      Success) return 0 ;;
+      Failed|Cancelled|TimedOut)
+        warn "SSM command failed with status: $status"
+        say "[ℹ️] Ensure the instance has AWS CLI installed in the home directory of the user 'ubuntu'"
+        say "[ℹ️] No need to configure AWS CLI on the instance; it uses the instance's IAM role."
+        say "[ℹ️] The role must allow access to the S3 bucket '$S3_BUCKET'."
+        exit 1
+        ;;
+    esac
+    sleep 2
+  done
+}
+
+start_session() {
+  local name="$1" instance_id="$2"
+  say "[🔌] Connecting to '$name' ($instance_id)..."
+  aws ssm start-session --target "$instance_id" "${AWS_ARGS[@]}"
+}
+
+# ============================================================================
+# Commands
+# ============================================================================
+cmd_help() {
+cat <<EOF
+Usage:
+  ssm-connect                     Launch interactive instance selector
+  ssm-connect <alias>             Connect directly to instance using alias
+  ssm-connect <group>             Pick from instances under a group
+
+  ssm-connect --add-alias    -a <alias> <id> [group]
+                                     Add or update an alias (optional group)
+  ssm-connect --remove-alias -r <alias>
+                                     Remove an alias
+  ssm-connect --list-aliases -l      List all aliases (sectioned by group)
+  ssm-connect --set-group <alias> <group>
+                                     Set or change the group of an existing alias
+  ssm-connect --unset-group <alias>
+                                     Remove the group from an existing alias
+  ssm-connect --scp <source> <destination>
+                                     Copy files via SSM/S3. Use alias:path for remote.
+                                     Upload:   ssm-connect --scp local.txt alias:/remote/path
+                                     Download: ssm-connect --scp alias:/remote/file.txt local/
+  ssm-connect --check-update         Check for updates
+  ssm-connect --update               Update to the latest version
+  ssm-connect --install-bash-completion
+                                     Install bash completion for ssm-connect
+  ssm-connect --whats-new            Show what's new in the latest version
+  ssm-connect --version              Show the installed version
+  ssm-connect --uninstall            Uninstall ssm-connect
+  ssm-connect --help         -h      Show this help
+EOF
+}
+
+cmd_add_alias() {
+  (( $# >= 2 && $# <= 3 )) || die "Usage: ssm-connect -a <alias> <instance-id> [group]"
+  local alias="$1" id="$2" grp="${3:-}"
+  validate_name "$alias" "Alias"
+  [[ -n "$grp" ]] && validate_name "$grp" "Group"
+  validate_instance_id "$id"
+
+  set_alias "$alias" "$id" "$grp"
+  if [[ -n "$grp" ]]; then
+    say "[✅] Alias '$alias' → '$id' (group: $grp) added."
+  else
+    say "[✅] Alias '$alias' → '$id' added."
+  fi
+}
+
+cmd_remove_alias() {
+  (( $# == 1 )) || die "Usage: ssm-connect -r <alias>"
+  local alias="$1"
+  if alias_exists "$alias"; then
+    remove_alias_line "$alias"
+    say "[🗑️] Alias '$alias' removed."
+  else
+    warn "Alias '$alias' not found."
+  fi
+}
+
+cmd_set_group() {
+  (( $# == 2 )) || die "Usage: ssm-connect --set-group <alias> <group>"
+  local alias="$1" grp="$2" id
+  validate_name "$grp" "Group"
+  id=$(get_instance_id "$alias")
+  [[ -n "$id" ]] || die "Alias '$alias' not found."
+  set_alias "$alias" "$id" "$grp"
+  say "[✅] Alias '$alias' added to group '$grp'."
+}
+
+cmd_unset_group() {
+  (( $# == 1 )) || die "Usage: ssm-connect --unset-group <alias>"
+  local alias="$1" id
+  id=$(get_instance_id "$alias")
+  [[ -n "$id" ]] || die "Alias '$alias' not found."
+  set_alias "$alias" "$id"
+  say "[✅] Alias '$alias' group cleared."
+}
+
+cmd_list_aliases() {
+  if [[ ! -s "$ALIAS_FILE" ]]; then
+    say "[📭] No aliases found."
+    return 0
+  fi
+  say "[📋] Current aliases:"
+  awk '
+    NF >= 3 { print $3 "\t" $1 "\t" $2; next }
+            { print "~\t" $1 "\t" $2 }
+  ' "$ALIAS_FILE" \
+    | sort -t $'\t' -k1,1 -k2,2 \
+    | awk -F'\t' -v c_grp="$C_GRP" -v c_hdr="$C_HDR" -v c_dim="$C_DIM" -v c_reset="$C_RESET" '
         {
           if ($1 != prev) {
             if (NR > 1) print ""
@@ -420,314 +493,327 @@ case "${1:-}" in
           }
           printf "  %s\t%s\n", $2, $3
         }
-      ' | column -t -s $'\t'
-    exit 0
-    ;;
-  --version)
-    if [[ -f "$VERSION_FILE" ]]; then
-      echo "[ℹ️] Current version: $(cat "$VERSION_FILE")"
-    else
-      echo "[⚠️] Version file not found. Please run: ssm-connect --update"
-    fi
-    exit 0
-    ;;
-  --uninstall)
-    if [[ "${1:-}" == "--uninstall" ]]; then
-      echo "[🗑️] Uninstalling ssm-connect..."
+      ' \
+    | column -t -s $'\t'
+}
 
-      # Remove CLI
-      if [[ -f "$SCRIPT_PATH" ]]; then
-        sudo rm -f "$SCRIPT_PATH"
-        echo "[✅] Removed CLI: $SCRIPT_PATH"
-      else
-        echo "[ℹ️] CLI script not found at $SCRIPT_PATH"
-      fi
+cmd_version() {
+  if [[ -f "$VERSION_FILE" ]]; then
+    say "[ℹ️] Current version: $(_read_local_version)"
+  else
+    warn "Version file not found. Please run: ssm-connect --update"
+  fi
+}
 
-      # Remove config
-      if [[ -d "$CONFIG_DIR" ]]; then
-        rm -rf "$CONFIG_DIR"
-        echo "[✅] Removed config dir: $CONFIG_DIR"
-      else
-        echo "[ℹ️] Config directory not found: $CONFIG_DIR"
-      fi
+cmd_whats_new() {
+  print_changelog "$(_read_local_version)"
+}
 
-      # Remove AWS profile credentials
-      AWS_CRED_FILE="$HOME/.aws/credentials"
-      AWS_CONFIG_FILE="$HOME/.aws/config"
+cmd_check_update() {
+  # Force a fresh, synchronous check and report the outcome clearly.
+  local rc=0
+  check_for_update || rc=$?
+  case $rc in
+    0) show_update_info ;;
+    1) say "[✅] ssm-connect is up to date (version $(_read_local_version))." ;;
+    2) warn "Could not check for updates (network or server unreachable)." ;;
+  esac
+}
 
-      if [[ -f "$AWS_CRED_FILE" ]] && grep -q "^\[$AWS_PROFILE\]" "$AWS_CRED_FILE"; then
-        sed -i.bak "/^\[$AWS_PROFILE\]/,/^\[/d" "$AWS_CRED_FILE"
-        echo "[✅] Removed credentials for profile: $AWS_PROFILE"
-      fi
+cmd_install_completion() {
+  install_completion
+}
 
-      if [[ -f "$AWS_CONFIG_FILE" ]] && grep -q "^\[profile $AWS_PROFILE\]" "$AWS_CONFIG_FILE"; then
-        sed -i.bak "/^\[profile $AWS_PROFILE\]/,/^\[/d" "$AWS_CONFIG_FILE"
-        echo "[✅] Removed config for profile: $AWS_PROFILE"
-      fi
-
-      # Optional cleanup of .bak files
-      rm -f "$AWS_CRED_FILE.bak" "$AWS_CONFIG_FILE.bak" 2>/dev/null || true
-
-      echo "[🧹] Uninstall complete."
-      exit 0
-    fi
-    ;;
-  --scp)
-    if [[ $# -ne 3 ]]; then
-      echo "[ERROR] Usage: ssm-connect --scp <source> <destination>"
-      echo "         Use alias:path for remote, e.g.:"
-      echo "           Upload:   ssm-connect --scp local.txt myserver:/home/ubuntu/"
-      echo "           Download: ssm-connect --scp myserver:/home/ubuntu/file.txt ./"
-      exit 1
-    fi
-
-    SOURCE="$2"
-    DESTINATION="$3"
-
-    if [[ "$SOURCE" == *:* ]]; then
-      SCP_ALIAS="${SOURCE%%:*}"
-      REMOTE_PATH="${SOURCE#*:}"
-      LOCAL_PATH="$DESTINATION"
-      DIRECTION="download"
-    elif [[ "$DESTINATION" == *:* ]]; then
-      SCP_ALIAS="${DESTINATION%%:*}"
-      REMOTE_PATH="${DESTINATION#*:}"
-      LOCAL_PATH="$SOURCE"
-      DIRECTION="upload"
-    else
-      echo "[ERROR] One of source or destination must be a remote path in alias:path format."
-      exit 1
-    fi
-
-    INSTANCE_ID=$(get_instance_id "$SCP_ALIAS")
-    if [[ -z "$INSTANCE_ID" ]]; then
-      echo "[ERROR] Alias '$SCP_ALIAS' not found."
-      exit 1
-    fi
-
-    ensure_sso_login
-
-    TMP_NAME="ssm-tmp-$(date +%s)-$RANDOM"
-    TMP_S3="s3://$S3_BUCKET/$TMP_NAME"
-
-    if [[ "$DIRECTION" == "upload" ]]; then
-      if [[ ! -f "$LOCAL_PATH" ]]; then
-        echo "[ERROR] Local file '$LOCAL_PATH' not found."
-        exit 1
-      fi
-
-      if [[ "$REMOTE_PATH" == */ ]]; then
-        REMOTE_PATH="${REMOTE_PATH}$(basename "$LOCAL_PATH")"
-      fi
-
-      echo "[📤] Uploading local file to S3..."
-      aws s3 cp "$LOCAL_PATH" "$TMP_S3" --region "$AWS_REGION" --profile "$AWS_PROFILE"
-
-      echo "[📦] Triggering SSM command to copy from S3 to instance..."
-      COMMAND_ID=$(aws ssm send-command \
-        --region "$AWS_REGION" \
-        --profile "$AWS_PROFILE" \
-        --instance-ids "$INSTANCE_ID" \
-        --document-name "AWS-RunShellScript" \
-        --comment "ssm-connect scp upload" \
-        --parameters "commands=[\"sudo -u ubuntu aws s3 cp $TMP_S3 $REMOTE_PATH --profile=ssm\",\"sudo -u ubuntu aws s3 rm $TMP_S3 --profile=ssm\"]" \
-        --query "Command.CommandId" --output text)
-
-      check_ssm_command "$COMMAND_ID"
-      echo "[✅] Upload complete."
-
-    else
-      if [[ -d "$LOCAL_PATH" ]] || [[ "$LOCAL_PATH" == */ ]]; then
-        LOCAL_PATH="${LOCAL_PATH%/}/$(basename "$REMOTE_PATH")"
-      fi
-
-      echo "[📦] Triggering SSM command to upload from instance to S3..."
-      COMMAND_ID=$(aws ssm send-command \
-        --region "$AWS_REGION" \
-        --profile "$AWS_PROFILE" \
-        --instance-ids "$INSTANCE_ID" \
-        --document-name "AWS-RunShellScript" \
-        --comment "ssm-connect scp download" \
-        --parameters "commands=[\"sudo -u ubuntu aws s3 cp $REMOTE_PATH $TMP_S3 --profile=ssm\"]" \
-        --query "Command.CommandId" --output text)
-
-      check_ssm_command "$COMMAND_ID"
-
-      echo "[📥] Downloading file from S3..."
-      aws s3 cp "$TMP_S3" "$LOCAL_PATH" --region "$AWS_REGION" --profile "$AWS_PROFILE"
-
-      echo "[🧹] Cleaning up S3..."
-      aws s3 rm "$TMP_S3" --region "$AWS_REGION" --profile "$AWS_PROFILE"
-
-      echo "[✅] Download complete."
-    fi
-
-    echo "[✅] SCP operation completed successfully!"
-    exit 0
-    ;;
-  --whats-new)
-    # read from changelog show new features
-    VERSION=$(cat "$VERSION_FILE")
-    print_changelog "$VERSION"
-    exit 0
-    ;;
-  --check-update)
-    # Force a fresh, synchronous check and report the outcome clearly.
-    rc=0
-    check_for_update || rc=$?
-    case $rc in
-      0) show_update_info ;;
-      1) echo "[✅] ssm-connect is up to date (version $(_read_local_version))." ;;
-      2) echo "[⚠️] Could not check for updates (network or server unreachable)." ;;
-    esac
-    exit 0
-    ;;
-  --install-bash-completion)
-    install_completion
-    exit 0
-    ;;
-  --update)
-      # Do our own version check rather than trusting the background flag, so
-      # --update is correct even on a fresh shell where the flag doesn't exist.
-      local_version=$(_read_local_version)
-      rc=0
-      remote_version=$(_fetch_remote_version) || rc=$?
-      if [[ $rc -ne 0 ]]; then
-        echo "[⚠️] Could not reach the update server. Please try again later."
-        exit 1
-      fi
-
-      if [[ "$(_version_cmp "$remote_version" "$local_version")" != "1" ]]; then
-        echo "[✅] ssm-connect is already up to date (version $local_version)."
-        : > "$UPDATE_INFO_FILE"
-        exit 0
-      fi
-
-      echo "[⬇️] Updating ssm-connect $local_version → $remote_version..."
-      if ! do_update "$remote_version"; then
-        exit 1
-      fi
-      : > "$UPDATE_INFO_FILE"
-      print_changelog "$remote_version"
-      exit 0
-      ;;
-  --*|-*)
-    echo "[❌] Unknown option: $1"
-    show_help
-    exit 1
-    ;;
-esac
-
-# === AWS SSO Profile Config ===
-ensure_sso_login
-
-# === Direct connect ===
-if [[ $# -eq 1 ]]; then
-  ALIAS_NAME="$1"
-  INSTANCE_ID=$(get_instance_id "$ALIAS_NAME")
-
-  if [[ -z "$INSTANCE_ID" ]]; then
-    # Fallback: maybe the arg is a group name
-    GROUP_LIST=$(list_group_aliases "$ALIAS_NAME")
-
-    if [[ -z "$GROUP_LIST" ]]; then
-      echo "[ERROR] No alias or group named '$ALIAS_NAME' found in $ALIAS_FILE"
-      exit 1
-    fi
-
-    GROUP_NAME="$ALIAS_NAME"
-    COUNT=$(echo "$GROUP_LIST" | wc -l | tr -d ' ')
-    echo "[🔍] Group '$GROUP_NAME' — $COUNT instance(s):"
-
-    DISPLAY_LIST=$({
-      printf "ALIAS\tINSTANCE\n"
-      echo "$GROUP_LIST" | awk '{ printf "%s\t%s\n", $1, $2 }' | sort
-    } | column -t -s $'\t')
-
-    SELECTED_LINE=$(echo "$DISPLAY_LIST" | fzf --ansi --header-lines=1 --color=header:bold --prompt="$GROUP_NAME › ")
-
-    if [[ -z "$SELECTED_LINE" ]]; then
-      echo "[⚠️] No instance selected."
-      exit 0
-    fi
-
-    ALIAS_NAME=$(echo "$SELECTED_LINE" | awk '{print $1}')
-    INSTANCE_ID=$(get_instance_id "$ALIAS_NAME")
+cmd_update() {
+  # Do our own version check rather than trusting the background flag, so
+  # --update is correct even on a fresh shell where the flag doesn't exist.
+  local local_version remote_version rc=0
+  local_version=$(_read_local_version)
+  remote_version=$(_fetch_remote_version) || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    die "Could not reach the update server. Please try again later."
   fi
 
-  echo "[🔌] Connecting to '$ALIAS_NAME' ($INSTANCE_ID)..."
-  aws ssm start-session --target "$INSTANCE_ID" --region "$AWS_REGION" --profile "$AWS_PROFILE"
-  exit 0
-fi
+  if [[ "$(_version_cmp "$remote_version" "$local_version")" != "1" ]]; then
+    say "[✅] ssm-connect is already up to date (version $local_version)."
+    : > "$UPDATE_INFO_FILE"
+    return 0
+  fi
 
-# === Interactive connect ===
-if [[ ! -s "$ALIAS_FILE" ]]; then
-  echo "[📭] No aliases found. Use: ssm-connect --add-alias <alias> <id>"
-  exit 0
-fi
+  say "[⬇️] Updating ssm-connect $local_version → $remote_version..."
+  do_update "$remote_version" || exit 1
+  : > "$UPDATE_INFO_FILE"
+  print_changelog "$remote_version"
+}
 
-mkdir -p "$(dirname "$USAGE_FILE")"
-touch "$USAGE_FILE"
+cmd_uninstall() {
+  say "[🗑️] Uninstalling ssm-connect..."
 
-echo "[🔍] Selecting instance interactively..."
+  # Remove CLI
+  if [[ -f "$SCRIPT_PATH" ]]; then
+    sudo rm -f "$SCRIPT_PATH"
+    say "[✅] Removed CLI: $SCRIPT_PATH"
+  else
+    say "[ℹ️] CLI script not found at $SCRIPT_PATH"
+  fi
 
-# Show group column only when at least one alias has a group
-HAS_GROUPS=$(awk 'NF >= 3 {print 1; exit}' "$ALIAS_FILE")
+  # Remove bash completion
+  local comp_dir
+  comp_dir=$(detect_completion_dir)
+  if [[ -n "$comp_dir" && -f "$comp_dir/ssm-connect" ]]; then
+    local sudo_cmd=""
+    [[ -w "$comp_dir" ]] || sudo_cmd="sudo"
+    $sudo_cmd rm -f "$comp_dir/ssm-connect"
+    say "[✅] Removed bash completion: $comp_dir/ssm-connect"
+  fi
 
-# Merge usage data (keyed by alias name) and sort by group then recency
-SORTED_ROWS=$(awk -F'\t' '
-  NR==FNR { count[$1] = $2 + 0; lastused[$1] = $3 + 0; next }
-  {
-    n = split($0, f, /[ \t]+/)
-    a = f[1]; id = f[2]; grp = (n >= 3) ? f[3] : ""
-    c = (a in count) ? count[a] : 0
-    l = (a in lastused) ? lastused[a] : 0
-    sort_grp = (grp == "") ? "~" : grp   # ungrouped sorts last
-    print sort_grp "\t" l "\t" c "\t" a "\t" id "\t" grp
+  # Remove config
+  if [[ -d "$CONFIG_DIR" ]]; then
+    rm -rf "$CONFIG_DIR"
+    say "[✅] Removed config dir: $CONFIG_DIR"
+  else
+    say "[ℹ️] Config directory not found: $CONFIG_DIR"
+  fi
+
+  # Remove AWS profile credentials/config
+  if [[ -f "$AWS_CRED_FILE" ]] && grep -q "^\[$AWS_PROFILE\]" "$AWS_CRED_FILE"; then
+    sed -i.bak "/^\[$AWS_PROFILE\]/,/^\[/d" "$AWS_CRED_FILE"
+    say "[✅] Removed credentials for profile: $AWS_PROFILE"
+  fi
+  if [[ -f "$AWS_CONFIG_FILE" ]] && grep -q "^\[profile $AWS_PROFILE\]" "$AWS_CONFIG_FILE"; then
+    sed -i.bak "/^\[profile $AWS_PROFILE\]/,/^\[/d" "$AWS_CONFIG_FILE"
+    say "[✅] Removed config for profile: $AWS_PROFILE"
+  fi
+  rm -f "$AWS_CRED_FILE.bak" "$AWS_CONFIG_FILE.bak" 2>/dev/null || true
+
+  say "[🧹] Uninstall complete."
+}
+
+cmd_scp() {
+  (( $# == 2 )) || {
+    warn "Usage: ssm-connect --scp <source> <destination>"
+    say  "         Use alias:path for remote, e.g.:"
+    say  "           Upload:   ssm-connect --scp local.txt myserver:/home/ubuntu/"
+    say  "           Download: ssm-connect --scp myserver:/home/ubuntu/file.txt ./"
+    exit 1
   }
-' "$USAGE_FILE" "$ALIAS_FILE" | sort -t $'\t' -k1,1 -k2,2nr -k3,3nr)
+  require_tools aws
 
-if [[ "$HAS_GROUPS" == "1" ]]; then
-  DISPLAY_LIST=$({
-    printf "ALIAS\tINSTANCE\tGROUP\n"
-    echo "$SORTED_ROWS" | awk -F'\t' \
-      -v c_grp="$C_GRP" -v c_dim="$C_DIM" -v c_reset="$C_RESET" '
-      {
-        grp = ($6 == "") ? (c_dim "—" c_reset) : (c_grp $6 c_reset)
-        printf "%s\t%s\t%s\n", $4, $5, grp
-      }'
-  } | column -t -s $'\t')
-else
-  DISPLAY_LIST=$({
-    printf "ALIAS\tINSTANCE\n"
-    echo "$SORTED_ROWS" | awk -F'\t' '{ printf "%s\t%s\n", $4, $5 }'
-  } | column -t -s $'\t')
-fi
+  local source="$1" destination="$2"
+  local scp_alias remote_path local_path direction
 
-SELECTED_LINE=$(echo "$DISPLAY_LIST" | fzf --ansi --header-lines=1 --color=header:bold --prompt="Select instance: ")
+  if [[ "$source" == *:* ]]; then
+    scp_alias="${source%%:*}"; remote_path="${source#*:}"
+    local_path="$destination"; direction="download"
+  elif [[ "$destination" == *:* ]]; then
+    scp_alias="${destination%%:*}"; remote_path="${destination#*:}"
+    local_path="$source"; direction="upload"
+  else
+    die "One of source or destination must be a remote path in alias:path format."
+  fi
 
-if [[ -z "$SELECTED_LINE" ]]; then
-  echo "[⚠️] No instance selected."
-  exit 0
-fi
+  validate_remote_path "$remote_path"
 
-ALIAS_NAME=$(echo "$SELECTED_LINE" | awk '{print $1}')
-INSTANCE_ID=$(get_instance_id "$ALIAS_NAME")
+  local instance_id
+  instance_id=$(get_instance_id "$scp_alias")
+  [[ -n "$instance_id" ]] || die "Alias '$scp_alias' not found."
 
-# Update usage file (keyed by alias name)
-now=$(date +%s)
-awk -F'\t' -v a="$ALIAS_NAME" -v t="$now" '
-  BEGIN { found=0 }
-  $1 == a { print $1 "\t" $2+1 "\t" t; found=1; next }
-  { print }
-  END { if (!found) print a "\t1\t" t }
-' "$USAGE_FILE" > "$USAGE_FILE.tmp"
-mv "$USAGE_FILE.tmp" "$USAGE_FILE"
+  ensure_sso_login
 
-echo "[🔌] Connecting to '$ALIAS_NAME' ($INSTANCE_ID)..."
-aws ssm start-session \
-  --target "$INSTANCE_ID" \
-  --region "$AWS_REGION" \
-  --profile "$AWS_PROFILE"
+  local tmp_name tmp_s3 command_id
+  tmp_name="ssm-tmp-$(date +%s)-$RANDOM"
+  tmp_s3="s3://$S3_BUCKET/$tmp_name"
 
-echo "[✅] Session ended."
+  if [[ "$direction" == "upload" ]]; then
+    [[ -f "$local_path" ]] || die "Local file '$local_path' not found."
+    # Append the basename when uploading into a directory path.
+    [[ "$remote_path" == */ ]] && remote_path="${remote_path}$(basename "$local_path")"
+
+    say "[📤] Uploading local file to S3..."
+    aws s3 cp "$local_path" "$tmp_s3" "${AWS_ARGS[@]}"
+
+    say "[📦] Triggering SSM command to copy from S3 to instance..."
+    command_id=$(aws ssm send-command "${AWS_ARGS[@]}" \
+      --instance-ids "$instance_id" \
+      --document-name "AWS-RunShellScript" \
+      --comment "ssm-connect scp upload" \
+      --parameters "commands=[\"sudo -u ubuntu aws s3 cp '$tmp_s3' '$remote_path' --profile=ssm\",\"sudo -u ubuntu aws s3 rm '$tmp_s3' --profile=ssm\"]" \
+      --query "Command.CommandId" --output text)
+
+    wait_for_ssm_command "$command_id"
+    say "[✅] Upload complete."
+  else
+    # Append the remote basename when downloading into a directory.
+    if [[ -d "$local_path" || "$local_path" == */ ]]; then
+      local_path="${local_path%/}/$(basename "$remote_path")"
+    fi
+
+    say "[📦] Triggering SSM command to upload from instance to S3..."
+    command_id=$(aws ssm send-command "${AWS_ARGS[@]}" \
+      --instance-ids "$instance_id" \
+      --document-name "AWS-RunShellScript" \
+      --comment "ssm-connect scp download" \
+      --parameters "commands=[\"sudo -u ubuntu aws s3 cp '$remote_path' '$tmp_s3' --profile=ssm\"]" \
+      --query "Command.CommandId" --output text)
+
+    wait_for_ssm_command "$command_id"
+
+    say "[📥] Downloading file from S3..."
+    aws s3 cp "$tmp_s3" "$local_path" "${AWS_ARGS[@]}"
+
+    say "[🧹] Cleaning up S3..."
+    aws s3 rm "$tmp_s3" "${AWS_ARGS[@]}"
+
+    say "[✅] Download complete."
+  fi
+
+  say "[✅] SCP operation completed successfully!"
+}
+
+# ----------------------------------------------------------------------------
+# Connecting (default action when no flag is given)
+# ----------------------------------------------------------------------------
+
+# Bump the usage counter and last-used timestamp for an alias.
+record_usage() {
+  local name="$1" now tmp
+  now=$(date +%s)
+  tmp="$USAGE_FILE.tmp"
+  awk -F'\t' -v a="$name" -v t="$now" '
+    $1 == a { print $1 "\t" $2 + 1 "\t" t; found = 1; next }
+            { print }
+    END     { if (!found) print a "\t1\t" t }
+  ' "$USAGE_FILE" > "$tmp"
+  mv "$tmp" "$USAGE_FILE"
+}
+
+# Connect to a single alias, or fall back to an fzf picker over a group.
+connect_direct() {
+  local name="$1" instance_id
+  instance_id=$(get_instance_id "$name")
+
+  if [[ -z "$instance_id" ]]; then
+    # The argument might be a group name instead of an alias.
+    local group_list
+    group_list=$(list_group_aliases "$name")
+    [[ -n "$group_list" ]] || die "No alias or group named '$name' found in $ALIAS_FILE"
+
+    local count display selected
+    count=$(printf '%s\n' "$group_list" | wc -l | tr -d ' ')
+    say "[🔍] Group '$name' — $count instance(s):"
+
+    display=$({
+      printf "ALIAS\tINSTANCE\n"
+      printf '%s\n' "$group_list" | awk '{ printf "%s\t%s\n", $1, $2 }' | sort
+    } | column -t -s $'\t')
+
+    selected=$(printf '%s\n' "$display" \
+      | fzf --ansi --header-lines=1 --color=header:bold --prompt="$name › ")
+    [[ -n "$selected" ]] || { say "[⚠️] No instance selected."; return 0; }
+
+    name=$(awk '{print $1}' <<<"$selected")
+    instance_id=$(get_instance_id "$name")
+  fi
+
+  start_session "$name" "$instance_id"
+}
+
+# Interactive picker over all aliases, sorted by group then recent usage.
+connect_interactive() {
+  if [[ ! -s "$ALIAS_FILE" ]]; then
+    say "[📭] No aliases found. Use: ssm-connect --add-alias <alias> <id>"
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$USAGE_FILE")"
+  touch "$USAGE_FILE"
+  say "[🔍] Selecting instance interactively..."
+
+  local has_groups sorted_rows display selected name instance_id
+  has_groups=$(awk 'NF >= 3 { print 1; exit }' "$ALIAS_FILE")
+
+  # Merge usage data (keyed by alias) and sort by group then recency. Match on
+  # FILENAME, not the NR==FNR idiom, which misfires when the usage file is empty
+  # (then the alias file's first line would be swallowed as usage data).
+  sorted_rows=$(awk -F'\t' -v usage="$USAGE_FILE" '
+    FILENAME == usage { count[$1] = $2 + 0; lastused[$1] = $3 + 0; next }
+    {
+      n = split($0, f, /[ \t]+/)
+      a = f[1]; id = f[2]; grp = (n >= 3) ? f[3] : ""
+      c = (a in count)    ? count[a]    : 0
+      l = (a in lastused) ? lastused[a] : 0
+      sort_grp = (grp == "") ? "~" : grp   # ungrouped sorts last
+      print sort_grp "\t" l "\t" c "\t" a "\t" id "\t" grp
+    }
+  ' "$USAGE_FILE" "$ALIAS_FILE" | sort -t $'\t' -k1,1 -k2,2nr -k3,3nr)
+
+  if [[ "$has_groups" == "1" ]]; then
+    display=$({
+      printf "ALIAS\tINSTANCE\tGROUP\n"
+      printf '%s\n' "$sorted_rows" | awk -F'\t' \
+        -v c_grp="$C_GRP" -v c_dim="$C_DIM" -v c_reset="$C_RESET" '
+        {
+          grp = ($6 == "") ? (c_dim "—" c_reset) : (c_grp $6 c_reset)
+          printf "%s\t%s\t%s\n", $4, $5, grp
+        }'
+    } | column -t -s $'\t')
+  else
+    display=$({
+      printf "ALIAS\tINSTANCE\n"
+      printf '%s\n' "$sorted_rows" | awk -F'\t' '{ printf "%s\t%s\n", $4, $5 }'
+    } | column -t -s $'\t')
+  fi
+
+  selected=$(printf '%s\n' "$display" \
+    | fzf --ansi --header-lines=1 --color=header:bold --prompt="Select instance: ")
+  [[ -n "$selected" ]] || { say "[⚠️] No instance selected."; return 0; }
+
+  name=$(awk '{print $1}' <<<"$selected")
+  instance_id=$(get_instance_id "$name")
+
+  record_usage "$name"
+  start_session "$name" "$instance_id"
+  say "[✅] Session ended."
+}
+
+cmd_connect() {
+  require_tools aws fzf
+  ensure_sso_login
+  if (( $# == 1 )); then
+    connect_direct "$1"
+  else
+    connect_interactive
+  fi
+}
+
+# ============================================================================
+# Entry point
+# ============================================================================
+main() {
+  init_runtime
+
+  # Daily, in the background, check for a newer release and stash a banner;
+  # show the previous run's banner now without ever blocking on the network.
+  run_daily_update_check >/dev/null 2>&1 &
+  show_update_info
+
+  case "${1:-}" in
+    --help|-h)                 cmd_help ;;
+    --add-alias|-a)            shift; cmd_add_alias "$@" ;;
+    --remove-alias|-r)         shift; cmd_remove_alias "$@" ;;
+    --set-group)               shift; cmd_set_group "$@" ;;
+    --unset-group)             shift; cmd_unset_group "$@" ;;
+    --list-aliases|-l)         cmd_list_aliases ;;
+    --version)                 cmd_version ;;
+    --whats-new)               cmd_whats_new ;;
+    --check-update)            cmd_check_update ;;
+    --install-bash-completion) cmd_install_completion ;;
+    --update)                  cmd_update ;;
+    --uninstall)               cmd_uninstall ;;
+    --scp)                     shift; cmd_scp "$@" ;;
+    --*|-*)                    warn "Unknown option: ${1:-}"; cmd_help; exit 1 ;;
+    *)                         cmd_connect "$@" ;;
+  esac
+}
+
+main "$@"

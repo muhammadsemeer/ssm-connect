@@ -1,11 +1,16 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/refs/heads/master/ssm-connect.sh"
-REMOTE_VERSION_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/version"
-COMPLETION_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/completions/ssm-connect.bash"
+readonly SCRIPT_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/refs/heads/master/ssm-connect.sh"
+readonly REMOTE_VERSION_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/version"
+readonly COMPLETION_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/completions/ssm-connect.bash"
 
-echo "[🔧] Installing ssm-connect..."
+# === Output helpers ===
+say()  { printf '%s\n' "$*"; }
+warn() { printf '[⚠️] %s\n' "$*" >&2; }
+die()  { printf '[❌] %s\n' "$*" >&2; exit 1; }
+
+say "[🔧] Installing ssm-connect..."
 
 # === Detect OS and architecture ===
 OS="$(uname -s)"
@@ -17,16 +22,13 @@ case "$OS" in
   Darwin) IS_MAC=true ;;
   Linux)
     IS_LINUX=true
-    if grep -qi 'arch' /etc/os-release; then
-          IS_ARCH=true
-    fi
-  ;;
-  *) echo "[❌] Unsupported OS: $OS"; exit 1 ;;
+    grep -qi 'arch' /etc/os-release && IS_ARCH=true
+    ;;
+  *) die "Unsupported OS: $OS" ;;
 esac
 
 if $IS_LINUX && [[ "$EUID" -ne 0 ]]; then
-  echo "[❌] Please run this script using: sudo ./install.sh"
-  exit 1
+  die "Please run this script using: sudo ./install.sh"
 fi
 
 # === Sudo user's context ===
@@ -37,82 +39,71 @@ ALIAS_FILE="$ALIAS_DIR/aliases"
 VERSION_FILE="$ALIAS_DIR/version"
 
 # === Choose binary install path ===
-if $IS_MAC; then
-  if [[ "$ARCH" == "arm64" ]]; then
-    SCRIPT_PATH="/opt/homebrew/bin/ssm-connect"
-  else
-    SCRIPT_PATH="/usr/local/bin/ssm-connect"
-  fi
+if $IS_MAC && [[ "$ARCH" == "arm64" ]]; then
+  SCRIPT_PATH="/opt/homebrew/bin/ssm-connect"
 else
   SCRIPT_PATH="/usr/local/bin/ssm-connect"
 fi
 
-# === Install helper for Linux ===
-install_if_missing_linux() {
-  missing_pkgs=()
+# === Package install helpers ===
+install_if_missing_apt() {
+  local pkg missing=()
   for pkg in "$@"; do
-    if ! dpkg -s "$pkg" >/dev/null 2>&1; then
-      missing_pkgs+=("$pkg")
-    fi
+    dpkg -s "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
   done
-
-  if [[ ${#missing_pkgs[@]} -gt 0 ]]; then
-    echo "[📦] Installing missing packages: ${missing_pkgs[*]}"
+  if (( ${#missing[@]} > 0 )); then
+    say "[📦] Installing missing packages: ${missing[*]}"
     apt-get update -qq >/dev/null 2>&1
-    apt-get install -y "${missing_pkgs[@]}" >/dev/null 2>&1 || echo "[ERROR] Failed to install one or more packages."
+    apt-get install -y "${missing[@]}" >/dev/null 2>&1 || warn "Failed to install one or more packages."
   else
-    echo "[✅] All required packages are already installed."
+    say "[✅] All required packages are already installed."
   fi
-}
-
-# === Install helper for macOS ===
-install_if_missing_brew() {
-  for pkg in "$@"; do
-    if ! brew list --formula "$pkg" &>/dev/null; then
-      echo "[📦] Installing $pkg..."
-      brew install --quiet "$pkg" >/dev/null 2>&1 || echo "[ERROR] Failed to install $pkg"
-    else
-      echo "[✅] $pkg already installed."
-    fi
-  done
 }
 
 install_if_missing_pacman() {
-  missing_pkgs=()
+  local pkg missing=()
   for pkg in "$@"; do
-    if ! pacman -Q "$pkg" &>/dev/null; then
-      missing_pkgs+=("$pkg")
+    pacman -Q "$pkg" &>/dev/null || missing+=("$pkg")
+  done
+  if (( ${#missing[@]} > 0 )); then
+    say "[📦] Installing missing packages: ${missing[*]}"
+    sudo pacman -Sy --noconfirm "${missing[@]}"
+  else
+    say "[✅] All required packages are already installed."
+  fi
+}
+
+install_if_missing_brew() {
+  local pkg
+  for pkg in "$@"; do
+    if brew list --formula "$pkg" &>/dev/null; then
+      say "[✅] $pkg already installed."
+    else
+      say "[📦] Installing $pkg..."
+      brew install --quiet "$pkg" >/dev/null 2>&1 || warn "Failed to install $pkg"
     fi
   done
-
-  if [[ ${#missing_pkgs[@]} -gt 0 ]]; then
-    echo "[📦] Installing missing packages: ${missing_pkgs[*]}"
-    sudo pacman -Sy --noconfirm "${missing_pkgs[@]}"
-  else
-    echo "[✅] All required packages are already installed."
-  fi
 }
 
 # === Install system packages ===
 if $IS_LINUX; then
-  echo "[📦] Checking required packages on Linux..."
+  say "[📦] Checking required packages on Linux..."
   if $IS_ARCH; then
-        install_if_missing_pacman curl jq fzf unzip git base-devel
+    install_if_missing_pacman curl jq fzf unzip git base-devel
   else
-      install_if_missing_linux curl jq fzf unzip
+    install_if_missing_apt curl jq fzf unzip
   fi
 elif $IS_MAC; then
-  echo "[📦] Checking required packages on macOS..."
-  if ! command -v brew &>/dev/null; then
-    echo "[❌] Homebrew not found. Please install it from https://brew.sh/"
-    exit 1
-  fi
+  say "[📦] Checking required packages on macOS..."
+  command -v brew &>/dev/null || die "Homebrew not found. Please install it from https://brew.sh/"
   install_if_missing_brew curl jq fzf unzip
 fi
 
 # === Install AWS CLI ===
-if ! command -v aws &>/dev/null; then
-  echo "[🌐] Installing AWS CLI..."
+if command -v aws &>/dev/null; then
+  say "[✅] AWS CLI already installed."
+else
+  say "[🌐] Installing AWS CLI..."
   if $IS_LINUX; then
     curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
     unzip -q -o /tmp/awscliv2.zip -d /tmp
@@ -123,71 +114,55 @@ if ! command -v aws &>/dev/null; then
     sudo installer -pkg /tmp/AWSCLIV2.pkg -target /
     rm /tmp/AWSCLIV2.pkg
   fi
-else
-  echo "[✅] AWS CLI already installed."
 fi
 
 # === Install Session Manager Plugin ===
-if ! command -v session-manager-plugin &>/dev/null; then
-  echo "[📦] Installing Session Manager Plugin..."
-  if $IS_LINUX; then
-    if $IS_ARCH; then
-      echo "[📦] Installing Session Manager Plugin from AUR..."
-
-      BUILD_DIR="$HOME_DIR/.cache/aur/aws-session-manager-plugin"
-      rm -rf "$BUILD_DIR"
-      sudo -u "$DEFAULT_USER" git clone --depth=1 https://aur.archlinux.org/aws-session-manager-plugin.git "$BUILD_DIR"
-
-      echo "[⚙️] Building package as $DEFAULT_USER..."
-      cd "$BUILD_DIR"
-      sudo -u "$DEFAULT_USER" bash -c "cd '$BUILD_DIR' && makepkg -si --noconfirm"
-
-      cd -
-      rm -rf "$BUILD_DIR"
-    else
-      curl -fsSL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o /tmp/session-manager-plugin.deb
-      dpkg -i /tmp/session-manager-plugin.deb
-      rm /tmp/session-manager-plugin.deb
-    fi
+if command -v session-manager-plugin &>/dev/null; then
+  say "[✅] Session Manager Plugin already installed."
+else
+  say "[📦] Installing Session Manager Plugin..."
+  if $IS_LINUX && $IS_ARCH; then
+    say "[📦] Installing Session Manager Plugin from AUR..."
+    BUILD_DIR="$HOME_DIR/.cache/aur/aws-session-manager-plugin"
+    rm -rf "$BUILD_DIR"
+    sudo -u "$DEFAULT_USER" git clone --depth=1 \
+      https://aur.archlinux.org/aws-session-manager-plugin.git "$BUILD_DIR"
+    say "[⚙️] Building package as $DEFAULT_USER..."
+    sudo -u "$DEFAULT_USER" bash -c "cd '$BUILD_DIR' && makepkg -si --noconfirm"
+    rm -rf "$BUILD_DIR"
+  elif $IS_LINUX; then
+    curl -fsSL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" \
+      -o /tmp/session-manager-plugin.deb
+    dpkg -i /tmp/session-manager-plugin.deb
+    rm /tmp/session-manager-plugin.deb
   elif $IS_MAC; then
-    TMP_DIR="/tmp/ssm-install"
-    mkdir -p "$TMP_DIR"
-    cd "$TMP_DIR"
-
     if [[ "$ARCH" == "arm64" ]]; then
       PLUGIN_URL="https://s3.amazonaws.com/session-manager-downloads/plugin/latest/mac_arm64/session-manager-plugin.pkg"
     else
       PLUGIN_URL="https://s3.amazonaws.com/session-manager-downloads/plugin/latest/mac/session-manager-plugin.pkg"
     fi
-
-    echo "[⬇️] Downloading plugin from: $PLUGIN_URL"
-    curl -fsSL "$PLUGIN_URL" -o "session-manager-plugin.pkg"
-
-    echo "[⚙️] Installing plugin..."
-    sudo installer -pkg "session-manager-plugin.pkg" -target /
-
-    echo "[🔗] Linking binary..."
+    say "[⬇️] Downloading plugin from: $PLUGIN_URL"
+    TMP_PKG=$(mktemp /tmp/session-manager-plugin.XXXXXX.pkg)
+    curl -fsSL "$PLUGIN_URL" -o "$TMP_PKG"
+    say "[⚙️] Installing plugin..."
+    sudo installer -pkg "$TMP_PKG" -target /
+    say "[🔗] Linking binary..."
     sudo ln -sf /usr/local/sessionmanagerplugin/bin/session-manager-plugin /usr/local/bin/session-manager-plugin
-
-    rm -rf "$TMP_DIR"
+    rm -f "$TMP_PKG"
   fi
-else
-  echo "[✅] Session Manager Plugin already installed."
 fi
 
 # === Install ssm-connect CLI ===
-echo "[⬇️] Installing ssm-connect CLI to $SCRIPT_PATH"
+say "[⬇️] Installing ssm-connect CLI to $SCRIPT_PATH"
 sudo mkdir -p "$(dirname "$SCRIPT_PATH")"
 sudo curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH"
 sudo chmod +x "$SCRIPT_PATH"
 
 # === Install bash completion ===
-echo "[⌨️ ] Installing bash completion..."
+say "[⌨️ ] Installing bash completion..."
 COMPLETION_DIR=""
 if $IS_MAC; then
-  if command -v brew &>/dev/null; then
-    COMPLETION_DIR="$(brew --prefix)/etc/bash_completion.d"
-  fi
+  command -v brew &>/dev/null && COMPLETION_DIR="$(brew --prefix)/etc/bash_completion.d"
 elif $IS_ARCH; then
   COMPLETION_DIR="/usr/share/bash-completion/completions"
 elif $IS_LINUX; then
@@ -201,17 +176,17 @@ fi
 if [[ -n "$COMPLETION_DIR" ]]; then
   mkdir -p "$COMPLETION_DIR"
   if curl -fsSL "$COMPLETION_URL" -o "$COMPLETION_DIR/ssm-connect" 2>/dev/null; then
-    echo "[✅] Bash completion installed to $COMPLETION_DIR/ssm-connect"
-    echo "[ℹ️] Restart your shell or run: source $COMPLETION_DIR/ssm-connect"
+    say "[✅] Bash completion installed to $COMPLETION_DIR/ssm-connect"
+    say "[ℹ️] Restart your shell or run: source $COMPLETION_DIR/ssm-connect"
   else
-    echo "[ℹ️] Skipped bash completion (download failed)."
+    say "[ℹ️] Skipped bash completion (download failed)."
   fi
 else
-  echo "[ℹ️] Could not detect a bash-completion directory; skipping completion install."
+  say "[ℹ️] Could not detect a bash-completion directory; skipping completion install."
 fi
 
 # === Setup alias and version config ===
-echo "[📁] Setting up config directory at $ALIAS_DIR"
+say "[📁] Setting up config directory at $ALIAS_DIR"
 mkdir -p "$ALIAS_DIR"
 touch "$ALIAS_FILE"
 chmod 700 "$ALIAS_DIR"
@@ -220,12 +195,12 @@ chmod 600 "$ALIAS_FILE"
 curl -fsSL "$REMOTE_VERSION_URL" -o "$VERSION_FILE" || echo "0.0.0" > "$VERSION_FILE"
 chmod 644 "$VERSION_FILE"
 
-# === Set permissions on Linux ===
+# === Set ownership on Linux ===
 if $IS_LINUX && id "$DEFAULT_USER" &>/dev/null; then
-  echo "[🔧] Adjusting ownership..."
+  say "[🔧] Adjusting ownership..."
   chown -R "$DEFAULT_USER:$DEFAULT_USER" "$ALIAS_DIR"
 fi
 
-echo
-echo "[✅] 'ssm-connect' installed successfully!"
-echo "[ℹ️] Run: ssm-connect --help"
+say ""
+say "[✅] 'ssm-connect' installed successfully!"
+say "[ℹ️] Run: ssm-connect --help"
