@@ -112,3 +112,9 @@
 ### Fixed
 - `--update` no longer ends with a spurious `tmp_script: unbound variable` error. The updater's temp-file cleanup used a `RETURN` trap, which (being global without functrace) re-fired on the caller's return where those locals are out of scope, tripping `set -u`. The trap now self-clears, and `--update` exits immediately after replacing the on-disk script so bash can't re-read the just-overwritten (longer) file. The update itself always succeeded; only the trailing error was new.
 
+## [2.5.0] - 2026-06-09
+### Added
+- Native **zsh** completion (`_ssm-connect`): completes flags, alias names, group names, and `alias:` targets for `--scp`, driven by `~/.ssm-connect/aliases` — so completion now works in zsh (the macOS default shell), not just bash
+- `ssm-connect --install-zsh-completion` installs/refreshes the zsh completion; `install.sh` now installs both bash and zsh completions, and `--update` refreshes whichever matches your `$SHELL`
+- `--uninstall` now also removes the installed zsh completion
+

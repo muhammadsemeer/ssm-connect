@@ -33,6 +33,7 @@ readonly REMOTE_VERSION_URL="$REPO_RAW/version"
 readonly SCRIPT_URL="$REPO_RAW/ssm-connect.sh"
 readonly REMOTE_CHANGELOG_URL="$REPO_RAW/CHANGELOG.md"
 readonly COMPLETION_URL="$REPO_RAW/completions/ssm-connect.bash"
+readonly COMPLETION_ZSH_URL="$REPO_RAW/completions/ssm-connect.zsh"
 
 readonly UPDATE_INFO_FILE="${TMPDIR:-/tmp}/ssm-connect-update-info"
 readonly LAST_CHECK_FILE="${TMPDIR:-/tmp}/ssm-connect-last-check"
@@ -242,6 +243,64 @@ install_completion() {
   fi
 }
 
+# Detect a zsh site-functions directory (one that's normally on $fpath), or
+# print nothing. Never fail (would trip set -u in $(...)).
+detect_zsh_completion_dir() {
+  case "$(uname -s)" in
+    Darwin)
+      command -v brew &>/dev/null \
+        && printf '%s\n' "$(brew --prefix)/share/zsh/site-functions"
+      ;;
+    Linux)
+      if [[ -d /usr/local/share/zsh/site-functions ]]; then
+        printf '%s\n' /usr/local/share/zsh/site-functions
+      elif [[ -d /usr/share/zsh/site-functions ]]; then
+        printf '%s\n' /usr/share/zsh/site-functions
+      fi
+      ;;
+  esac
+  return 0
+}
+
+install_zsh_completion() {
+  local dir
+  dir=$(detect_zsh_completion_dir)
+  if [[ -z "$dir" ]]; then
+    say "[ℹ️] Could not detect a zsh site-functions directory; skipping zsh completion."
+    return 0
+  fi
+
+  # Try without sudo first (Homebrew dirs are user-owned); fall back to sudo.
+  local sudo_cmd=""
+  if ! mkdir -p "$dir" 2>/dev/null; then
+    sudo_cmd="sudo"
+    $sudo_cmd mkdir -p "$dir" 2>/dev/null || true
+  fi
+  if [[ -z "$sudo_cmd" && ! -w "$dir" ]]; then
+    sudo_cmd="sudo"
+  fi
+
+  if $sudo_cmd curl -fsSL "$COMPLETION_ZSH_URL" -o "$dir/_ssm-connect" 2>/dev/null; then
+    say "[✅] Zsh completion installed to $dir/_ssm-connect"
+    say "[ℹ️] zsh loads it once $dir is on \$fpath and compinit has run. Refresh with:"
+    say "       rm -f ~/.zcompdump*; autoload -Uz compinit && compinit"
+    if [[ "$(uname -s)" == "Darwin" ]] && command -v brew &>/dev/null; then
+      say "     If completions still aren't found, add this to ~/.zshrc before compinit:"
+      say '       FPATH="$(brew --prefix)/share/zsh/site-functions:$FPATH"'
+    fi
+  else
+    say "[ℹ️] Skipped zsh completion (download failed)."
+  fi
+}
+
+# Install whichever completion matches the user's login shell (used by --update).
+install_completion_for_shell() {
+  case "${SHELL:-}" in
+    */zsh) install_zsh_completion ;;
+    *)     install_completion ;;
+  esac
+}
+
 # Download the new release to temp files and only swap them into place once
 # every download has succeeded, so a mid-update failure can't leave a
 # half-written binary or a version file that disagrees with the script.
@@ -274,7 +333,7 @@ do_update() {
   install -m 0644 "$tmp_version" "$VERSION_FILE"
   install -m 0644 "$tmp_changelog" "$CHANGELOG_PATH"
 
-  install_completion
+  install_completion_for_shell
   say "[✅] ssm-connect updated to version $new_version!"
 }
 
@@ -459,6 +518,8 @@ Usage:
   ssm-connect --update               Update to the latest version
   ssm-connect --install-bash-completion
                                      Install bash completion for ssm-connect
+  ssm-connect --install-zsh-completion
+                                     Install zsh completion for ssm-connect
   ssm-connect --whats-new            Show what's new in the latest version
   ssm-connect --version              Show the installed version
   ssm-connect --uninstall            Uninstall ssm-connect
@@ -608,6 +669,16 @@ cmd_uninstall() {
     [[ -w "$comp_dir" ]] || sudo_cmd="sudo"
     $sudo_cmd rm -f "$comp_dir/ssm-connect"
     say "[✅] Removed bash completion: $comp_dir/ssm-connect"
+  fi
+
+  # Remove zsh completion
+  local zsh_dir
+  zsh_dir=$(detect_zsh_completion_dir)
+  if [[ -n "$zsh_dir" && -f "$zsh_dir/_ssm-connect" ]]; then
+    local zsudo=""
+    [[ -w "$zsh_dir" ]] || zsudo="sudo"
+    $zsudo rm -f "$zsh_dir/_ssm-connect"
+    say "[✅] Removed zsh completion: $zsh_dir/_ssm-connect"
   fi
 
   # Remove config
@@ -851,6 +922,7 @@ main() {
     --whats-new)               cmd_whats_new ;;
     --check-update)            cmd_check_update ;;
     --install-bash-completion) cmd_install_completion ;;
+    --install-zsh-completion)  install_zsh_completion ;;
     --update)                  cmd_update ;;
     --uninstall)               cmd_uninstall ;;
     --scp)                     shift; cmd_scp "$@" ;;

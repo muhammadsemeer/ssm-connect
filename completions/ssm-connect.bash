@@ -16,8 +16,8 @@ _ssm_connect() {
   local alias_file="${SSM_CONNECT_ALIAS_FILE:-$HOME/.ssm-connect/aliases}"
 
   local opts="--add-alias --remove-alias --list-aliases --set-group \
---unset-group --scp --check-update --update --install-bash-completion --help \
---version --uninstall --whats-new"
+--unset-group --scp --check-update --update --install-bash-completion \
+--install-zsh-completion --help --version --uninstall --whats-new"
 
   # Helpers that read the alias file (one entry per line: "alias id [group]")
   _ssm_aliases() {

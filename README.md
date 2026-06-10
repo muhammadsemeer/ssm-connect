@@ -180,21 +180,39 @@ The script also runs a background version check once per day and shows an update
 
 ## Shell completion
 
-`ssm-connect` ships a **bash** completion script (completes flags, alias names, group names, and `alias:` targets for `--scp`). The installer sets it up automatically; you can also (re)install it later:
+`ssm-connect` ships **bash** and **zsh** completion scripts (both complete flags, alias names, group names, and `alias:` targets for `--scp`). `install.sh` sets up both, and `--update` refreshes whichever matches your `$SHELL`. You can also (re)install them on demand:
 
 ```bash
 ssm-connect --install-bash-completion
+ssm-connect --install-zsh-completion
 ```
+
+### bash
 
 **Linux** — works out of the box.
 
-**macOS** — completion runs in **bash** (macOS defaults to zsh, which this does not cover) and requires the `bash-completion@2` package. Both `install.sh` and `ssm-connect --install-bash-completion`/`--update` install that package automatically via Homebrew. The one manual step is making sure your `~/.bash_profile` sources it:
+**macOS** — completion runs in **bash** and requires the `bash-completion@2` package. Both `install.sh` and `ssm-connect --install-bash-completion`/`--update` install that package automatically via Homebrew. The one manual step is making sure your `~/.bash_profile` sources it:
 
 ```bash
 echo '[[ -r "$(brew --prefix)/etc/profile.d/bash_completion.sh" ]] && . "$(brew --prefix)/etc/profile.d/bash_completion.sh"' >> ~/.bash_profile
 ```
 
 Then open a new bash session.
+
+### zsh
+
+The completion (`_ssm-connect`) installs to `$(brew --prefix)/share/zsh/site-functions` on macOS, or `/usr/share/zsh/site-functions` on Linux. It loads once that directory is on your `$fpath` and `compinit` has run. With Homebrew, ensure your `~/.zshrc` has the following **before** `compinit`:
+
+```bash
+FPATH="$(brew --prefix)/share/zsh/site-functions:$FPATH"
+autoload -Uz compinit && compinit
+```
+
+Then refresh the completion cache and reload:
+
+```bash
+rm -f ~/.zcompdump*; compinit   # or just open a new terminal
+```
 
 ---
 

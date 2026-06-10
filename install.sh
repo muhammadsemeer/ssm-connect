@@ -4,6 +4,7 @@ set -euo pipefail
 readonly SCRIPT_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/refs/heads/master/ssm-connect.sh"
 readonly REMOTE_VERSION_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/version"
 readonly COMPLETION_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/completions/ssm-connect.bash"
+readonly COMPLETION_ZSH_URL="https://raw.githubusercontent.com/muhammadsemeer/ssm-connect/master/completions/ssm-connect.zsh"
 
 # === Output helpers ===
 say()  { printf '%s\n' "$*"; }
@@ -188,6 +189,35 @@ if [[ -n "$COMPLETION_DIR" ]]; then
   fi
 else
   say "[ℹ️] Could not detect a bash-completion directory; skipping completion install."
+fi
+
+# === Install zsh completion ===
+say "[⌨️ ] Installing zsh completion..."
+ZSH_COMPLETION_DIR=""
+if $IS_MAC; then
+  command -v brew &>/dev/null && ZSH_COMPLETION_DIR="$(brew --prefix)/share/zsh/site-functions"
+elif $IS_LINUX; then
+  if [[ -d /usr/local/share/zsh/site-functions ]]; then
+    ZSH_COMPLETION_DIR="/usr/local/share/zsh/site-functions"
+  else
+    ZSH_COMPLETION_DIR="/usr/share/zsh/site-functions"
+  fi
+fi
+
+if [[ -n "$ZSH_COMPLETION_DIR" ]]; then
+  mkdir -p "$ZSH_COMPLETION_DIR"
+  if curl -fsSL "$COMPLETION_ZSH_URL" -o "$ZSH_COMPLETION_DIR/_ssm-connect" 2>/dev/null; then
+    say "[✅] Zsh completion installed to $ZSH_COMPLETION_DIR/_ssm-connect"
+    if $IS_MAC; then
+      say "[ℹ️] zsh: ensure ~/.zshrc has Homebrew's site-functions on fpath before compinit:"
+      say '       FPATH="$(brew --prefix)/share/zsh/site-functions:$FPATH"'
+      say "       autoload -Uz compinit && compinit"
+    else
+      say "[ℹ️] zsh: run 'compinit' or open a new shell to load completion."
+    fi
+  else
+    say "[ℹ️] Skipped zsh completion (download failed)."
+  fi
 fi
 
 # === Setup alias and version config ===
